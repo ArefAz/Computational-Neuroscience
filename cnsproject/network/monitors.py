@@ -72,7 +72,7 @@ class Monitor:
         self.time_steps = 0
         self.device = device
 
-        self.recording = []
+        self.recording = {}
 
     def set_time_steps(self, time: int, dt: float):
         """
