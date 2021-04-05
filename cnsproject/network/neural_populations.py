@@ -7,7 +7,6 @@ from abc import abstractmethod
 from operator import mul
 from typing import Union, Iterable
 
-import copy
 import torch
 
 
@@ -139,7 +138,7 @@ class NeuralPopulation(torch.nn.Module):
                 self.traces.masked_fill_(self.s, 1)
 
     @abstractmethod
-    def compute_potential(self) -> None:
+    def compute_potential(self, in_current: torch.Tensor) -> None:
         """
         Compute the potential of neurons in the population.
 
@@ -184,7 +183,7 @@ class NeuralPopulation(torch.nn.Module):
         None
 
         """
-        self.dt = torch.tensor(self.dt)
+        self.dt = self.dt.clone().detach()
 
         if self.spike_trace:
             self.trace_decay = torch.exp(-self.dt / self.tau_s)
@@ -235,7 +234,7 @@ class LIFPopulation(NeuralPopulation):
             shape: Iterable[int],
             spike_trace: bool = True,
             additive_spike_trace: bool = True,
-            tau_s: Union[float, torch.Tensor] = 10.,
+            tau_s: Union[float, torch.Tensor] = 15.,
             trace_scale: Union[float, torch.Tensor] = 1.,
             is_inhibitory: bool = False,
             learning: bool = True,
@@ -251,13 +250,30 @@ class LIFPopulation(NeuralPopulation):
             learning=learning,
         )
 
-        """
-        TODO.
+        self._init_kwargs(kwargs)
 
-        1. Add the required parameters.
-        2. Fill the body accordingly.
-        """
+        self.register_parameter(
+            "potential",
+            torch.nn.parameter.Parameter(self.u_rest, requires_grad=False)
+        )
+        self.register_buffer(
+            "in_current",
+            torch.zeros((1,), dtype=torch.float32)
+        )
 
+        # just to silence PyCharm's warning
+        if self.potential is None:
+            self.potential = None
+        if self.s is None:
+            self.s = None
+        if self.tau is None:
+            self.tau = None
+        if self.r is None:
+            self.r = None
+        if self.in_current is None:
+            self.in_current = None
+
+    def _init_kwargs(self, kwargs: dict) -> None:
         if (k := 'threshold') in kwargs:
             tensor = torch.tensor(kwargs[k], dtype=torch.float32)
         else:
@@ -268,29 +284,22 @@ class LIFPopulation(NeuralPopulation):
         else:
             tensor = torch.tensor(-60, dtype=torch.float32)
         self.register_buffer('u_rest', tensor)
+        if self.u_rest >= self.threshold:
+            raise ValueError('u_rest should be lower than threshold')
         if (k := 'dt') in kwargs:
             self.dt = torch.tensor(kwargs[k], dtype=torch.float32)
         else:
             self.dt = torch.tensor(1, dtype=torch.float32)
-        if (k := 'iterations') in kwargs:
-            self.iterations = int(kwargs[k])
+        if (k := 'r') in kwargs:
+            tensor = torch.tensor(float(kwargs[k]), dtype=torch.float32)
         else:
-            self.iterations = 1000
-
-        # zero = torch.tensor(False, dtype=torch.bool)
-        # self.register_parameter(
-        #     "s",
-        #     torch.nn.parameter.Parameter(zero, requires_grad=False))
-
-        self.register_parameter(
-            "potential",
-            torch.nn.parameter.Parameter(self.u_rest)
-        )
-        if self.potential is None:
-            self.potential = None
-        if self.s is None:
-            self.s = None
-        self.input = None
+            tensor = torch.tensor(1, dtype=torch.float32)
+        self.register_buffer('r', tensor)
+        if (k := 'tau') in kwargs:
+            tensor = torch.tensor(float(kwargs[k]), dtype=torch.float32)
+        else:
+            tensor = torch.tensor(15, dtype=torch.float32)
+        self.register_buffer('tau', tensor)
 
     def forward(self, traces: torch.Tensor) -> None:
         """
@@ -300,11 +309,13 @@ class LIFPopulation(NeuralPopulation):
            responsible for one step of neuron simulation.
         2. You might need to call the method from parent class.
         """
-        self.traces = traces
-        self.compute_potential()
+        self.in_current = traces
+        self.compute_potential(traces)
         self.compute_spike()
+        super().forward(traces)
+        self.compute_decay()
 
-    def compute_potential(self) -> None:
+    def compute_potential(self, in_current: torch.Tensor) -> None:
         """
         TODO.
 
@@ -312,9 +323,9 @@ class LIFPopulation(NeuralPopulation):
         neurons. The method can either make changes to attributes directly or\
         return the result for further use.
         """
-        u_update = -(self.dt / self.tau_s) * (
-                self.potential.data - self.u_rest -
-                self.trace_scale * self.traces)
+        u_update = -(self.dt / self.tau) * (
+                (self.potential.data - self.u_rest) - (self.r * in_current)
+        )
         self.potential.data = self.potential.data + u_update
 
     def compute_spike(self) -> None:
@@ -324,7 +335,7 @@ class LIFPopulation(NeuralPopulation):
         Implement the spike condition. The method can either make changes to\
         attributes directly or return the result for further use.
         """
-        if self.potential.data >= self.threshold:
+        if self.potential.data[0] >= self.threshold:
             self.s = torch.tensor(True, dtype=torch.bool)
             self.refractory_and_reset()
         else:
@@ -339,7 +350,8 @@ class LIFPopulation(NeuralPopulation):
         further use.
         """
         self.potential = torch.nn.parameter.Parameter(
-            torch.unsqueeze(self.u_rest, 0))
+            torch.unsqueeze(self.u_rest, 0)
+        )
 
     def compute_decay(self) -> None:
         """
@@ -349,7 +361,6 @@ class LIFPopulation(NeuralPopulation):
         parent class.
         """
         super().compute_decay()
-        pass
 
     def reset_state_variables(self):
         super().reset_state_variables()

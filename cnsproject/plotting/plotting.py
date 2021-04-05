@@ -14,31 +14,56 @@ also a bonus. The visualizations you will definitely need are as follows:
 5. Weight change through time.
 """
 
-import matplotlib.pyplot as plt
 import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.ticker import FormatStrFormatter
 from cnsproject.network.network import Monitor
 
 
-def time_plot(monitor: Monitor) -> None:
-    potential = monitor.get("potential")
-    spikes = monitor.get("s")
-    fig, axs = plt.subplots(2)
-    fig.suptitle('Vertically stacked subplots')
-    axs[0].plot(potential.cpu())
-    axs[1].plot(spikes.cpu(), c='r')
-    f = spikes[spikes]
-    print(len(f))
+def time_plot(monitor: Monitor, figsize=(12.5, 15), plot_spikes=True) -> None:
+    potential = monitor.get("potential").cpu()
+    spikes = monitor.get("s").cpu()
+    in_currents = monitor.get("in_current").cpu()
+    u_rest = monitor.get("u_rest").cpu()[-1]
+    threshold = monitor.get("threshold").cpu()[-1]
+    tau = monitor.get("tau").cpu()[-1]
+
+    if plot_spikes:
+        fig, axs = plt.subplots(3, figsize=figsize)
+    else:
+        fig, axs = plt.subplots(2, figsize=figsize)
+
+    axs[0].title.set_text('Neuron Dynamics with tau={}'.format(tau))
+    axs[0].axhline(y=u_rest, color='y', linestyle='--')
+    axs[0].axhline(y=threshold, color='y', linestyle='--')
+    axs[0].set_ylabel('u(t)')
+    axs[0].plot(potential, linewidth=0.75)
+
+    if plot_spikes:
+        axs[1].title.set_text('Spikes')
+        axs[1].set_ylabel('spike')
+        axs[1].set_yticks([0, 1])
+        axs[1].plot(spikes, c='r', linewidth=0.5)
+        axs[2].title.set_text('Input')
+        axs[2].set_xlabel('time')
+        axs[2].set_ylabel('I(t)')
+        axs[2].plot(in_currents, c='g', linewidth=0.5)
+    else:
+        axs[1].title.set_text('Input')
+        axs[1].set_xlabel('time')
+        axs[1].set_ylabel('I(t)')
+        axs[1].plot(in_currents, c='g', linewidth=0.5)
 
 
-def fi_curve(f: np.ndarray, i: np.ndarray) -> None:
-    if f.shape != i.shape:
+def fi_curve(i: np.ndarray, f: np.ndarray, figsize=(12.5, 5)) -> None:
+    if i.shape != f.shape:
         raise AssertionError('Input shapes have to match.')
-    plt.plot(f, i)
-
-
-if __name__ == '__main__':
-    voltage = np.random.randn(100)
-    frequency = np.random.randn(100)
-    current = np.random.randn(100)
-    time_plot(voltage)
-    fi_curve(current, frequency)
+    fig, ax = plt.subplots(1, figsize=figsize)
+    ax.title.set_text('F-I Curve')
+    ax.set_xlabel('I(t)')
+    ax.set_ylabel('f (1/s)')
+    ax.xaxis.set_major_formatter(FormatStrFormatter('%.1f'))
+    ax.set_yticks(f)
+    ax.set_xticks(i.round(2))
+    ax.grid()
+    ax.plot(i, f, marker='o', mfc='r')

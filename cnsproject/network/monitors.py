@@ -74,6 +74,7 @@ class Monitor:
         self.device = device
 
         self.recording = {}
+        self.reset_state_variables()
 
     def set_time_steps(self, time: int, dt: float):
         """
@@ -106,8 +107,8 @@ class Monitor:
 
         """
         logs = torch.cat(self.recording[variable], 0)
-        if self.time_steps == 0:
-            self.recording[variable] = []
+        # if self.time_steps == 0:
+        #     self.recording[variable] = []
         return logs
 
     def record(self) -> None:
