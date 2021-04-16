@@ -316,13 +316,6 @@ class LIFPopulation(NeuralPopulation):
         self.compute_decay()
 
     def compute_potential(self, in_current: torch.Tensor) -> None:
-        """
-        TODO.
-
-        Implement the neural dynamics for computing the potential of LIF\
-        neurons. The method can either make changes to attributes directly or\
-        return the result for further use.
-        """
         u_update = -(self.dt / self.tau) * (
                 (self.potential.data - self.u_rest) - (self.r * in_current)
         )
@@ -470,62 +463,96 @@ class ELIFPopulation(NeuralPopulation):
             learning=learning,
         )
 
-        """
-        TODO.
+        self._init_kwargs(kwargs)
 
-        1. Add the required parameters.
-        2. Fill the body accordingly.
-        """
+        self.register_parameter(
+            "potential",
+            torch.nn.parameter.Parameter(self.u_rest, requires_grad=False)
+        )
+        self.register_buffer(
+            "in_current",
+            torch.zeros((1,), dtype=torch.float32)
+        )
+        self.spiked = False
+
+        # just to silence PyCharm's warning
+        if self.potential is None:
+            self.potential = None
+        if self.s is None:
+            self.s = None
+        if self.tau is None:
+            self.tau = None
+        if self.r is None:
+            self.r = None
+        if self.in_current is None:
+            self.in_current = None
+
+    def _init_kwargs(self, kwargs: dict) -> None:
+        dtype = torch.float32
+        tensor = torch.tensor(kwargs.get('threshold', -50), dtype=dtype)
+        self.register_buffer('threshold', tensor)
+        tensor = torch.tensor(kwargs.get('u_rest', -65), dtype=dtype)
+        self.register_buffer('u_rest', tensor)
+        self.dt = torch.tensor(kwargs.get('dt', 1), dtype=dtype)
+        tensor = torch.tensor(kwargs.get('r', 1), dtype=dtype)
+        self.register_buffer('r', tensor)
+        tensor = torch.tensor(kwargs.get('tau', 50), dtype=dtype)
+        self.register_buffer('tau', tensor)
+        tensor = torch.tensor(kwargs.get('theta_rh', -55), dtype=dtype)
+        self.register_buffer('theta_rh', tensor)
+        tensor = torch.tensor(kwargs.get('theta_reset', -20), dtype=dtype)
+        self.register_buffer('theta_reset', tensor)
+        if not (self.u_rest < self.theta_rh < self.threshold <
+                self.theta_reset):
+            raise ValueError(
+                'Incorrect parameters encountered. Check threshold '
+                'u_rest, theta_rh and theta_reset'
+            )
+        tensor = torch.tensor(kwargs.get('delta_T', 1), dtype=dtype)
+        self.register_buffer('delta_T', tensor)
 
     def forward(self, traces: torch.Tensor) -> None:
-        """
-        TODO.
+        self.in_current = traces
+        self.compute_potential(traces)
+        self.compute_spike()
+        super().forward(traces)
+        self.compute_decay()
 
-        1. Make use of other methods to fill the body. This is the main method\
-           responsible for one step of neuron simulation.
-        2. You might need to call the method from parent class.
-        """
-        pass
+    def compute_potential(self, in_current: torch.Tensor) -> None:
 
-    def compute_potential(self) -> None:
-        """
-        TODO.
-
-        Implement the neural dynamics for computing the potential of ELIF\
-        neurons. The method can either make changes to attributes directly or\
-        return the result for further use.
-        """
-        pass
+        exp = torch.exp((self.potential.data - self.theta_rh) / self.delta_T)
+        if self.delta_T == 0:
+            exp = torch.zeros_like(exp)
+        u_update = (self.dt / self.tau) * (
+                -(self.potential.data - self.u_rest) + self.delta_T * exp +
+                (self.r * in_current)
+        )
+        self.potential.data = self.potential.data + u_update
 
     def compute_spike(self) -> None:
-        """
-        TODO.
+        if self.potential.data[0] >= self.threshold and not self.spiked:
+            self.s = torch.tensor(True, dtype=torch.bool)
+            self.spiked = True
+        else:
+            self.s = torch.tensor(False, dtype=torch.bool)
 
-        Implement the spike condition. The method can either make changes to
-        attributes directly or return the result for further use.
-        """
-        pass
+        if self.potential.data[0] >= self.theta_reset:
+            self.refractory_and_reset()
 
-    @abstractmethod
     def refractory_and_reset(self) -> None:
-        """
-        TODO.
+        self.spiked = False
+        self.potential = torch.nn.parameter.Parameter(
+            torch.unsqueeze(self.u_rest, 0)
+        )
 
-        Implement the refractory and reset conditions. The method can either\
-        make changes to attributes directly or return the computed value for\
-        further use.
-        """
-        pass
-
-    @abstractmethod
     def compute_decay(self) -> None:
-        """
-        TODO.
+        super().compute_decay()
 
-        Implement the dynamics of decays. You might need to call the method from
-        parent class.
-        """
-        pass
+    def reset_state_variables(self):
+        super().reset_state_variables()
+        self.potential.data = self.u_rest
+        self.spiked = False
+        self.s = torch.tensor(False, dtype=torch.bool)
 
 
 class AELIFPopulation(NeuralPopulation):
@@ -560,59 +587,114 @@ class AELIFPopulation(NeuralPopulation):
             learning=learning,
         )
 
-        """
-        TODO.
+        self._init_kwargs(kwargs)
 
-        1. Add the required parameters.
-        2. Fill the body accordingly.
-        """
+        self.register_parameter(
+            "potential",
+            torch.nn.parameter.Parameter(self.u_rest, requires_grad=False)
+        )
+        self.register_parameter(
+            'w',
+            torch.nn.parameter.Parameter(
+                torch.zeros((1,), dtype=torch.float32),
+                requires_grad=False
+            )
+        )
+        self.register_buffer(
+            "in_current",
+            torch.zeros((1,), dtype=torch.float32)
+        )
+        self.spiked = False
+        # just to silence PyCharm's warning
+        if self.potential is None:
+            self.potential = None
+        if self.s is None:
+            self.s = None
+        if self.tau is None:
+            self.tau = None
+        if self.r is None:
+            self.r = None
+        if self.in_current is None:
+            self.in_current = None
+
+    def _init_kwargs(self, kwargs: dict) -> None:
+        dtype = torch.float32
+        tensor = torch.tensor(kwargs.get('a', 1e-1), dtype=dtype)
+        self.register_buffer('a', tensor)
+        tensor = torch.tensor(kwargs.get('b', 1e-1), dtype=dtype)
+        self.register_buffer('b', tensor)
+        tensor = torch.tensor(kwargs.get('tau_w', 1), dtype=dtype)
+        self.register_buffer('tau_w', tensor)
+        tensor = torch.tensor(kwargs.get('threshold', -50), dtype=dtype)
+        self.register_buffer('threshold', tensor)
+        tensor = torch.tensor(kwargs.get('u_rest', -65), dtype=dtype)
+        self.register_buffer('u_rest', tensor)
+        self.dt = torch.tensor(kwargs.get('dt', 1), dtype=dtype)
+        tensor = torch.tensor(kwargs.get('r', 1), dtype=dtype)
+        self.register_buffer('r', tensor)
+        tensor = torch.tensor(kwargs.get('tau', 50), dtype=dtype)
+        self.register_buffer('tau', tensor)
+        tensor = torch.tensor(kwargs.get('theta_rh', -55), dtype=dtype)
+        self.register_buffer('theta_rh', tensor)
+        tensor = torch.tensor(kwargs.get('theta_reset', -20), dtype=dtype)
+        self.register_buffer('theta_reset', tensor)
+        if not (self.u_rest < self.theta_rh < self.threshold <
+                self.theta_reset):
+            raise ValueError(
+                'Incorrect parameters encountered. Check threshold '
+                'u_rest, theta_rh and theta_reset'
+            )
+        tensor = torch.tensor(kwargs.get('delta_T', 1), dtype=dtype)
+        self.register_buffer('delta_T', tensor)
 
     def forward(self, traces: torch.Tensor) -> None:
-        """
-        TODO.
+        self.in_current = traces
+        self.compute_potential(traces)
+        self.compute_spike()
+        super().forward(traces)
+        self.compute_decay()
 
-        1. Make use of other methods to fill the body. This is the main method\
-           responsible for one step of neuron simulation.
-        2. You might need to call the method from parent class.
-        """
-        pass
+    def compute_potential(self, in_current: torch.Tensor) -> None:
 
-    def compute_potential(self) -> None:
-        """
-        TODO.
+        self.compute_adaptation()
+        exp = torch.exp((self.potential.data - self.theta_rh) / self.delta_T)
+        if self.delta_T == 0:
+            exp = torch.zeros_like(exp)
+        u_update = (self.dt / self.tau) * (
+                -(self.potential.data - self.u_rest) + (self.delta_T * exp) -
+                (self.r * self.w.data) + (self.r * in_current)
+        )
+        self.potential.data = self.potential.data + u_update
 
-        Implement the neural dynamics for computing the potential of adaptive\
-        ELIF neurons. The method can either make changes to attributes directly\
-        or return the result for further use.
-        """
-        pass
+    def compute_adaptation(self) -> None:
+        w_update = (self.dt / self.tau_w) * (
+                self.a * (self.potential.data - self.u_rest) - self.w.data +
+                self.b * self.tau_w * int(self.s)
+        )
+        self.w.data = self.w.data + w_update
 
     def compute_spike(self) -> None:
-        """
-        TODO.
+        if self.potential.data[0] >= self.threshold and not self.spiked:
+            self.s = torch.tensor(True, dtype=torch.bool)
+            self.spiked = True
+        else:
+            self.s = torch.tensor(False, dtype=torch.bool)
 
-        Implement the spike condition. The method can either make changes to\
-        attributes directly or return the result for further use.
-        """
-        pass
+        if self.potential.data[0] >= self.theta_reset and self.spiked:
+            self.spiked = False
+            self.refractory_and_reset()
 
-    @abstractmethod
     def refractory_and_reset(self) -> None:
-        """
-        TODO.
+        self.potential = torch.nn.parameter.Parameter(
+            torch.unsqueeze(self.u_rest, 0)
+        )
 
-        Implement the refractory and reset conditions. The method can either\
-        make changes to attributes directly or return the computed value for\
-        further use.
-        """
-        pass
-
-    @abstractmethod
     def compute_decay(self) -> None:
-        """
-        TODO.
+        super().compute_decay()
 
-        Implement the dynamics of decays. You might need to call the method from
-        parent class.
-        """
-        pass
+    def reset_state_variables(self):
+        super().reset_state_variables()
+        self.potential.data = self.u_rest
+        self.spiked = False
+        self.w.data = torch.zeros((1, ), dtype=torch.float32)
+        self.s = torch.tensor(False, dtype=torch.bool)

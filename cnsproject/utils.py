@@ -15,9 +15,9 @@ import numpy as np
 import copy
 import time
 from cnsproject.network.neural_populations import NeuralPopulation, \
-    LIFPopulation
+    LIFPopulation, ELIFPopulation, AELIFPopulation
 from cnsproject.network.monitors import Monitor
-from typing import List
+from typing import List, Union
 
 
 def create_line(
@@ -26,9 +26,8 @@ def create_line(
         noise_std: float = 0.1,
         size: int = 1000
 ) -> np.ndarray:
-    rng = np.random.default_rng()
-    noise = rng.standard_normal(size) * noise_std
-    out = a * np.arange(size, dtype=np.float32) + b + noise
+    noise = torch.randn(size, dtype=torch.float32) * noise_std
+    out = a * np.arange(size, dtype=np.float32) + b + np.array(noise)
     return out
 
 
@@ -55,15 +54,23 @@ def apply_random_current(
         iters: int = 1000,
         zero_percent: int = 2,
 ) -> None:
-    zero_time = iters * zero_percent // 100
+    zero_time = iters * zero_percent // 2 // 100
+    noise_std = line_params['noise_std']
     currents = create_line(line_params['a'], line_params['b'],
-                           line_params['noise_std'], size=iters - zero_time)
+                           noise_std,
+                           size=iters - 2 * zero_time)
     for i in range(zero_time):
-        neuron.forward(torch.tensor([0], dtype=torch.float32))
+        neuron.forward(torch.randn(1, dtype=torch.float32) * noise_std)
         monitor.record()
     for current in currents:
         neuron.forward(torch.tensor([current], dtype=torch.float32))
         monitor.record()
+    for i in range(zero_time):
+        neuron.forward(torch.randn(1, dtype=torch.float32) * noise_std)
+        monitor.record()
+    # for i in range(zero_time):
+    #     neuron.forward(torch.tensor([10], dtype=torch.float32))
+    #     monitor.record()
 
 
 def simulate_current(
@@ -82,7 +89,7 @@ def simulate_current(
         # count the number of spikes (spike is True)
         spike_count = len(spikes[spikes])
         # to consider the zero time in calculating the frequency of spikes
-        freq = spike_count / (1 - zero_percent / 100)
+        freq = spike_count # / (1 - zero_percent / 100)
 
     return round(freq)
 
@@ -123,9 +130,12 @@ def run_simulation_with_params(
         save_monitor_states: bool = False,
         line_slop: float = 0,
         noise_std: float = 0,
-        zero_percent: int = 2
+        zero_percent: int = 2,
+        neuron_type: Union[
+            NeuralPopulation, LIFPopulation, ELIFPopulation, AELIFPopulation] =
+        LIFPopulation,
 ) -> (np.ndarray, np.ndarray, Monitor, list, float):
-    neuron = LIFPopulation((1,), **neuron_params)
+    neuron = neuron_type((1,), **neuron_params)
     monitor = Monitor(neuron, state_variables=monitor_vars)
 
     input_line_params = [{'a': line_slop, 'b': b, 'noise_std': noise_std} for b
