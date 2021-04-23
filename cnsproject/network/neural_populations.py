@@ -112,7 +112,6 @@ class NeuralPopulation(torch.nn.Module):
         # You can use `torch.Tensor()` instead of `torch.zeros(*shape, dtype=torch.bool)` if \
         # `reset_state_variables` is intended to be called before every simulation.
         self.register_buffer("s", torch.zeros(*self.shape, dtype=torch.bool))
-        self.dt = None
 
     @abstractmethod
     def forward(self, traces: torch.Tensor) -> None:
@@ -229,6 +228,7 @@ class LIFPopulation(NeuralPopulation):
     Follow the template structure of NeuralPopulation class for consistency.
     """
 
+    # noinspection PyTypeChecker
     def __init__(
             self,
             shape: Iterable[int],
@@ -249,29 +249,29 @@ class LIFPopulation(NeuralPopulation):
             is_inhibitory=is_inhibitory,
             learning=learning,
         )
-
         self._init_kwargs(kwargs)
 
-        self.register_parameter(
-            "potential",
-            torch.nn.parameter.Parameter(self.u_rest, requires_grad=False)
+        self.shape = shape
+        self.register_buffer(
+            "neuron_potentials",
+            torch.ones(*self.shape, dtype=torch.float32) * self.u_rest
         )
         self.register_buffer(
             "in_current",
-            torch.zeros((1,), dtype=torch.float32)
+            torch.zeros(*self.shape, dtype=torch.float32)
         )
 
         # just to silence PyCharm's warning
-        if self.potential is None:
-            self.potential = None
+        if self.neuron_potentials is None:
+            self.neuron_potentials: torch.Tensor = None
         if self.s is None:
-            self.s = None
+            self.s: torch.Tensor = None
         if self.tau is None:
-            self.tau = None
+            self.tau: torch.Tensor = None
         if self.r is None:
-            self.r = None
+            self.r: torch.Tensor = None
         if self.in_current is None:
-            self.in_current = None
+            self.in_current: torch.Tensor = None
 
     def _init_kwargs(self, kwargs: dict) -> None:
         if (k := 'threshold') in kwargs:
@@ -287,9 +287,10 @@ class LIFPopulation(NeuralPopulation):
         if self.u_rest >= self.threshold:
             raise ValueError('u_rest should be lower than threshold')
         if (k := 'dt') in kwargs:
-            self.dt = torch.tensor(kwargs[k], dtype=torch.float32)
+            tensor = torch.tensor(kwargs[k], dtype=torch.float32)
         else:
-            self.dt = torch.tensor(1, dtype=torch.float32)
+            tensor = torch.tensor(1, dtype=torch.float32)
+        self.register_buffer('dt', tensor)
         if (k := 'r') in kwargs:
             tensor = torch.tensor(float(kwargs[k]), dtype=torch.float32)
         else:
@@ -302,13 +303,6 @@ class LIFPopulation(NeuralPopulation):
         self.register_buffer('tau', tensor)
 
     def forward(self, traces: torch.Tensor) -> None:
-        """
-        TODO.
-
-        1. Make use of other methods to fill the body. This is the main method\
-           responsible for one step of neuron simulation.
-        2. You might need to call the method from parent class.
-        """
         self.in_current = traces
         self.compute_potential(traces)
         self.compute_spike()
@@ -317,33 +311,25 @@ class LIFPopulation(NeuralPopulation):
 
     def compute_potential(self, in_current: torch.Tensor) -> None:
         u_update = -(self.dt / self.tau) * (
-                (self.potential.data - self.u_rest) - (self.r * in_current)
+                (self.neuron_potentials - self.u_rest) - (self.r * in_current)
         )
-        self.potential.data = self.potential.data + u_update
+        self.neuron_potentials += u_update
 
     def compute_spike(self) -> None:
-        """
-        TODO.
 
-        Implement the spike condition. The method can either make changes to\
-        attributes directly or return the result for further use.
-        """
-        if self.potential.data[0] >= self.threshold:
-            self.s = torch.tensor(True, dtype=torch.bool)
-            self.refractory_and_reset()
-        else:
-            self.s = torch.tensor(False, dtype=torch.bool)
+        self.s = torch.where(
+            self.neuron_potentials < self.threshold,
+            torch.zeros(1, dtype=torch.bool),
+            torch.ones(1, dtype=torch.bool)
+        )
+        self.refractory_and_reset()
 
-    def refractory_and_reset(self) -> None:
-        """
-        TODO.
-
-        Implement the refractory and reset conditions. The method can either\
-        make changes to attributes directly or return the computed value for\
-        further use.
-        """
-        self.potential = torch.nn.parameter.Parameter(
-            torch.unsqueeze(self.u_rest, 0)
+    def refractory_and_reset(self, index: int = 0) -> None:
+        # noinspection PyTypeChecker
+        self.neuron_potentials = torch.where(
+            self.neuron_potentials < self.threshold,
+            self.neuron_potentials,
+            self.u_rest
         )
 
     def compute_decay(self) -> None:
@@ -357,7 +343,13 @@ class LIFPopulation(NeuralPopulation):
 
     def reset_state_variables(self):
         super().reset_state_variables()
-        self.potential.data = self.u_rest
+        self.neuron_potentials.data = self.u_rest
+
+    def add_to_voltage(self, v: torch.Tensor) -> None:
+        assert self.neuron_potentials.shape == v.shape, \
+            "input tensor shape should be the same as the neuron_potentials'"\
+            "shape"
+        self.neuron_potentials += v
 
 
 class InputPopulation(NeuralPopulation):
@@ -696,5 +688,5 @@ class AELIFPopulation(NeuralPopulation):
         super().reset_state_variables()
         self.potential.data = self.u_rest
         self.spiked = False
-        self.w.data = torch.zeros((1, ), dtype=torch.float32)
+        self.w.data = torch.zeros((1,), dtype=torch.float32)
         self.s = torch.tensor(False, dtype=torch.bool)

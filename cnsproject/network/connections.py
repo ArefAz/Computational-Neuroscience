@@ -6,8 +6,9 @@ from abc import ABC, abstractmethod
 from typing import Union, Sequence
 
 import torch
+import numpy as np
 
-from .neural_populations import NeuralPopulation
+from .neural_populations import NeuralPopulation, LIFPopulation
 
 
 class AbstractConnection(ABC, torch.nn.Module):
@@ -66,12 +67,12 @@ class AbstractConnection(ABC, torch.nn.Module):
     """
 
     def __init__(
-        self,
-        pre: NeuralPopulation,
-        post: NeuralPopulation,
-        lr: Union[float, Sequence[float]] = None,
-        weight_decay: float = 0.0,
-        **kwargs
+            self,
+            pre: NeuralPopulation,
+            post: NeuralPopulation,
+            lr: Union[float, Sequence[float]] = None,
+            weight_decay: float = 0.0,
+            **kwargs
     ) -> None:
         super().__init__()
 
@@ -80,8 +81,9 @@ class AbstractConnection(ABC, torch.nn.Module):
         assert isinstance(post, NeuralPopulation), \
             "Post is not a NeuralPopulation instance"
 
-        self.pre = pre
-        self.post = post
+        neuron_type = kwargs.get('neuron_type', LIFPopulation)
+        self.pre: neuron_type = pre
+        self.post: neuron_type = post
 
         self.weight_decay = weight_decay
 
@@ -100,15 +102,10 @@ class AbstractConnection(ABC, torch.nn.Module):
         self.norm = kwargs.get('norm', None)
 
     @abstractmethod
-    def compute(self, s: torch.Tensor) -> None:
+    def compute(self) -> None:
         """
         Compute the post-synaptic neural population activity based on the given\
         spikes of the pre-synaptic population.
-
-        Parameters
-        ----------
-        s : torch.Tensor
-            The pre-synaptic spikes tensor.
 
         Returns
         -------
@@ -165,12 +162,12 @@ class DenseConnection(AbstractConnection):
     """
 
     def __init__(
-        self,
-        pre: NeuralPopulation,
-        post: NeuralPopulation,
-        lr: Union[float, Sequence[float]] = None,
-        weight_decay: float = 0.0,
-        **kwargs
+            self,
+            pre: NeuralPopulation,
+            post: NeuralPopulation,
+            lr: Union[float, Sequence[float]] = None,
+            weight_decay: float = 0.0,
+            **kwargs
     ) -> None:
         super().__init__(
             pre=pre,
@@ -179,21 +176,51 @@ class DenseConnection(AbstractConnection):
             weight_decay=weight_decay,
             **kwargs
         )
-        """
-        TODO.
 
-        1. Add more parameters if needed.
-        2. Fill the body accordingly.
-        """
+        self.j0 = kwargs.get('j0', 80)
+        self.sig0 = kwargs.get('sig0', 1e-10)
+        self.wmin = torch.tensor(self.wmin)
+        self.wmax = torch.tensor(self.wmax)
+        mean = torch.tensor(self.j0 / self.pre.n, dtype=torch.float32)
+        if mean < self.wmin or mean > self.wmax:
+            raise ValueError('J0 is not compatible with wmax and wmin.')
+        std = torch.tensor(self.sig0 / self.pre.n, dtype=torch.float32)
+        # Initializing the weight_matrix with a normal distribution
+        # with specified mean & std
+        self.register_buffer(
+            "weight_matrix",
+            torch.FloatTensor(*pre.shape, *post.shape).normal_(
+                mean=mean,
+                std=std
+            )
+        )
 
-    def compute(self, s: torch.Tensor) -> None:
-        """
-        TODO.
+        # Make sure non of the weights are outside of [wmin, wmax]
+        self.weight_matrix = torch.where(self.weight_matrix < self.wmin, mean,
+                                         self.weight_matrix)
+        self.weight_matrix = torch.where(self.weight_matrix > self.wmax, mean,
+                                         self.weight_matrix)
+        # Remove self connections
+        if pre == post:
+            self.weight_matrix.fill_diagonal_(0)
+        if self.weight_matrix is None:
+            # noinspection PyTypeChecker
+            self.weight_matrix: torch.Tensor = None
+        # Negating all the weights if pre-synaptic population is inhibitory
+        if self.pre.is_inhibitory:
+            self.weight_matrix *= -1
 
-        Implement the computation of post-synaptic population activity given the
-        activity of the pre-synaptic population.
-        """
-        pass
+    def compute(self) -> None:
+        # calculating the input of the post-synaptic neurons,
+        # provided the weight_matrix and pre-synaptic neurons' spikes.
+        # In the next line we multiply the spike states (of all pre-neurons)
+        # in the weight_matrix (i.e., selecting the rows that the corresponding
+        # neuron has spiked)
+        additive_voltages: torch.Tensor = (self.weight_matrix.T * self.pre.s).T
+        # Then, here we add the effect of all spiked pre-synaptic neurons
+        # for each post-synaptic neuron
+        additive_voltages = additive_voltages.sum(dim=0)
+        self.post.add_to_voltage(additive_voltages)
 
     def update(self, **kwargs) -> None:
         """
@@ -222,12 +249,13 @@ class RandomConnection(AbstractConnection):
     """
 
     def __init__(
-        self,
-        pre: NeuralPopulation,
-        post: NeuralPopulation,
-        lr: Union[float, Sequence[float]] = None,
-        weight_decay: float = 0.0,
-        **kwargs
+            self,
+            pre: NeuralPopulation,
+            post: NeuralPopulation,
+            lr: Union[float, Sequence[float]] = None,
+            weight_decay: float = 0.0,
+            num_pre_connections: int = 10,
+            **kwargs
     ) -> None:
         super().__init__(
             pre=pre,
@@ -236,21 +264,46 @@ class RandomConnection(AbstractConnection):
             weight_decay=weight_decay,
             **kwargs
         )
-        """
-        TODO.
+        if num_pre_connections > pre.n:
+            raise ValueError(
+                'number of pre-synapse connections cannot be greater than '
+                'pre-pop #neurons'
+            )
+        weights_value = torch.tensor((self.wmax - self.wmin) / 2,
+                                     dtype=torch.float32)
+        # Initializing the weight_matrix with an arbitrary fixed value.
+        self.register_buffer(
+            "weight_matrix",
+            torch.ones(*pre.shape, *post.shape) * weights_value
+        )
+        # First all of the possible connections' weights are set to
+        # a fixed value, then the specified number them will be set back to
+        # zero to have "num_pre_connections" non-zero weight in the
+        # weight_matrix
+        self.fill_weight_matrix(num_pre_connections)
+        if self.weight_matrix is None:
+            # noinspection PyTypeChecker
+            self.weight_matrix: torch.Tensor = None
+        if self.pre.is_inhibitory:
+            self.weight_matrix *= -1
 
-        1. Add more parameters if needed.
-        2. Fill the body accordingly.
-        """
+    def fill_weight_matrix(self, num_pre_connections: int) -> None:
+        for i in range(self.weight_matrix.shape[1]):
+            # randomly select non-connections
+            zero_indexes = np.random.choice(
+                self.pre.n,
+                self.pre.n - num_pre_connections,
+                replace=False
+            )
+            self.weight_matrix[:, i][zero_indexes] = 0
+        # Remove self connections
+        if self.pre == self.post:
+            self.weight_matrix.fill_diagonal_(0)
 
-    def compute(self, s: torch.Tensor) -> None:
-        """
-        TODO.
-
-        Implement the computation of post-synaptic population activity given the
-        activity of the pre-synaptic population.
-        """
-        pass
+    def compute(self) -> None:
+        additive_voltages: torch.Tensor = (self.weight_matrix.T * self.pre.s).T
+        additive_voltages = additive_voltages.sum(dim=0)
+        self.post.add_to_voltage(additive_voltages)
 
     def update(self, **kwargs) -> None:
         """
@@ -279,12 +332,12 @@ class ConvolutionalConnection(AbstractConnection):
     """
 
     def __init__(
-        self,
-        pre: NeuralPopulation,
-        post: NeuralPopulation,
-        lr: Union[float, Sequence[float]] = None,
-        weight_decay: float = 0.0,
-        **kwargs
+            self,
+            pre: NeuralPopulation,
+            post: NeuralPopulation,
+            lr: Union[float, Sequence[float]] = None,
+            weight_decay: float = 0.0,
+            **kwargs
     ) -> None:
         super().__init__(
             pre=pre,
@@ -300,7 +353,7 @@ class ConvolutionalConnection(AbstractConnection):
         2. Fill the body accordingly.
         """
 
-    def compute(self, s: torch.Tensor) -> None:
+    def compute(self) -> None:
         """
         TODO.
 
@@ -339,12 +392,12 @@ class PoolingConnection(AbstractConnection):
     """
 
     def __init__(
-        self,
-        pre: NeuralPopulation,
-        post: NeuralPopulation,
-        lr: Union[float, Sequence[float]] = None,
-        weight_decay: float = 0.0,
-        **kwargs
+            self,
+            pre: NeuralPopulation,
+            post: NeuralPopulation,
+            lr: Union[float, Sequence[float]] = None,
+            weight_decay: float = 0.0,
+            **kwargs
     ) -> None:
         super().__init__(
             pre=pre,
@@ -360,7 +413,7 @@ class PoolingConnection(AbstractConnection):
         2. Fill the body accordingly.
         """
 
-    def compute(self, s: torch.Tensor) -> None:
+    def compute(self) -> None:
         """
         TODO.
 
