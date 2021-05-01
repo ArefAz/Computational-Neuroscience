@@ -14,11 +14,12 @@ import torch
 import numpy as np
 import copy
 import time
+
 from cnsproject.network.neural_populations import NeuralPopulation, \
     LIFPopulation, ELIFPopulation, AELIFPopulation
+from cnsproject.network import Network
 from cnsproject.network.monitors import Monitor
-from cnsproject.network.connections import DenseConnection, RandomConnection, \
-    AbstractConnection
+from cnsproject.network.connections import DenseConnection, RandomConnection
 from typing import List, Union, Iterable
 
 
@@ -167,9 +168,7 @@ def round_of_rating(number: np.ndarray) -> np.ndarray:
     return (number * 2).round() / 2
 
 
-def run_connection_simulation(
-        **kwargs,
-):
+def run_connection_simulation(**kwargs):
     connection_type = kwargs.get('connection_type', RandomConnection)
     num_connections = kwargs.get('num_connections', [20, 30, 10])
     w_maxes = kwargs.get('w_maxes', [1, 1, 1])
@@ -242,4 +241,157 @@ def run_connection_simulation(
         monitor_1.record()
         monitor_2.record()
 
+    # inhibitory_currents = torch.zeros(sim_time, *inhibitory_pop.shape)
+    # for i, currents in enumerate(all_currents):
+    #     inhibitory_currents[i] = currents[inhibitory_input_samples]
+    # net = Network(learning=False)
+    # net.add_layer(excitatory_pop, "ep")
+    # net.add_layer(inhibitory_pop, "ip")
+    # net.add_connection(connection_1, "ep", "ep")
+    # net.add_connection(connection_2, "ep", "ip")
+    # net.add_connection(connection_3, "ip", "ep")
+    # net.add_monitor(monitor_1, "ep")
+    # net.add_monitor(monitor_2, "ip")
+    # input_dict = dict(ep=all_currents, ip=inhibitory_currents)
+    # net.reset_state_variables()
+    # net.run(sim_time=sim_time, inputs=input_dict)
+
     return monitor_1, monitor_2
+
+
+def run_decision_simulation(**kwargs):
+    connection_types = kwargs.get('connection_types', [RandomConnection] * 3)
+    n_connections = kwargs.get('num_connections', [20, 20, 20])
+    w_maxes = kwargs.get('w_maxes', [1, 1, 1])
+    n_neurons = kwargs.get('n_neurons', 1000)
+    default_neuron_params = {'threshold': -50, 'u_rest': -65, 'tau': 50}
+    neuron_params = kwargs.get('neuron_params', default_neuron_params)
+    sim_time = kwargs.get('sim_time', 2000)
+    zero_time = kwargs.get('zero_time', 200)
+    dt = kwargs.get('dt', 1.0)
+    neuron_noise_std = kwargs.get('neuron_noise_std', 4)
+    time_noise_std = kwargs.get('time_noise_std', 5)
+    input_base_value = kwargs.get('input_base_value', 20)
+    sine_amplitude = kwargs.get('sine_amplitude', 0)
+    sine_freq = kwargs.get('sine_freq', 1)
+    step_amplitude = kwargs.get('step_amplitude', 0)
+    ep1_add_linear = kwargs.get('ep1_add_linear', False)
+    line_slop = kwargs.get('line_slop', 0)
+    sine_abs = kwargs.get('sine_abs', True)
+    j0 = kwargs.get('j0', [10, 10, 10])
+    sig0 = kwargs.get('sig0', [0.2] * 3)
+
+    ep1 = LIFPopulation(shape=(n_neurons * 4 // 10,),
+                        is_inhibitory=False,
+                        **neuron_params)
+    ep2 = LIFPopulation(shape=(n_neurons * 4 // 10,),
+                        is_inhibitory=False,
+                        **neuron_params)
+    ip = LIFPopulation(shape=(n_neurons * 2 // 10,),
+                       is_inhibitory=True,
+                       threshold=-60, u_rest=-65, tau=25)
+    monitor_vars = ["s", "neuron_potentials", "in_current"]
+    monitor_ep1 = Monitor(ep1, state_variables=monitor_vars)
+    monitor_ep2 = Monitor(ep2, state_variables=monitor_vars)
+    monitor_ip = Monitor(ip,
+                         state_variables=[monitor_vars[0], monitor_vars[-1]])
+
+    # EE connections
+    connection_ep1_ep1 = connection_types[0](
+        ep1, ep1, j0=j0[0], sig0=sig0[0], n_pre_connections=n_connections[0],
+        wmax=w_maxes[0]
+    )
+    connection_ep2_ep2 = connection_types[0](
+        ep2, ep2, j0=j0[0], sig0=sig0[0], n_pre_connections=n_connections[0],
+        wmax=w_maxes[0]
+    )
+
+    # EI connections
+    connection_ep1_ip = connection_types[1](
+        ep1, ip, j0=j0[1], sig0=sig0[1], n_pre_connections=n_connections[1],
+        wmax=w_maxes[1]
+    )
+    connection_ep2_ip = connection_types[1](
+        ep2, ip, j0=j0[1], sig0=sig0[1], n_pre_connections=n_connections[1],
+        wmax=w_maxes[1]
+    )
+
+    # IE connections
+    connection_ip_ep1 = connection_types[2](
+        ip, ep1, j0=j0[2], sig0=sig0[2], n_pre_connections=n_connections[2],
+        wmax=w_maxes[2]
+    )
+    connection_ip_ep2 = connection_types[2](
+        ip, ep2, j0=j0[2], sig0=sig0[2], n_pre_connections=n_connections[2],
+        wmax=w_maxes[2]
+    )
+
+    monitor_ep1.set_time_steps(sim_time, dt)
+    monitor_ep2.set_time_steps(sim_time, dt)
+    monitor_ip.set_time_steps(sim_time, dt)
+    monitor_ep1.reset_state_variables()
+    monitor_ep2.reset_state_variables()
+    monitor_ip.reset_state_variables()
+
+    np.random.seed(0)
+    torch.random.manual_seed(0)
+    torch.manual_seed(0)
+    time_noise = (torch.rand(sim_time, dtype=torch.float32) - 0.5
+                  ) * time_noise_std
+    neuron_noise = (torch.rand(
+        sim_time,
+        *ep1.shape
+    ) - 0.5) * neuron_noise_std
+    all_currents = torch.zeros(sim_time, *ep1.shape)
+    for t in range(sim_time):
+        if t < zero_time // 2 or t > sim_time - zero_time // 2:
+            added_value = 0
+        else:
+            added_value = input_base_value
+        currents = (
+                torch.ones(*ep1.shape) * (added_value + time_noise[t])
+        )
+        currents += neuron_noise[t]
+        all_currents[t] = currents
+
+    ip_zero_input = torch.zeros(sim_time, *ip.shape)
+    ep2_currents = torch.clone(all_currents)
+    ep2_currents[zero_time * 2:-zero_time * 2] += step_amplitude
+    sine = torch.sin(
+        torch.arange(0, 10 * sine_freq * (sim_time // 1000), 0.01 * sine_freq)
+    ) * sine_amplitude
+    linear = torch.arange(len(ep2_currents),
+                          dtype=torch.float32) - zero_time * 2
+    linear *= float(line_slop)
+
+    if sine_abs:
+        sine = torch.abs(sine)
+    sine[:zero_time * 2] = 0
+    sine[-zero_time * 2:] = 0
+    linear[:zero_time * 2] = 0
+    linear[-zero_time * 2:] = 0
+    for i in range(len(ep2_currents.T)):
+        ep2_currents[..., i] += sine
+        if not ep1_add_linear:
+            ep2_currents[..., i] += linear
+        else:
+            all_currents[..., i] += linear
+
+    net = Network(learning=False)
+    net.add_layer(ep1, "ep1")
+    net.add_layer(ep2, "ep2")
+    net.add_layer(ip, "ip")
+    net.add_connection(connection_ep1_ep1, "ep1", "ep1")
+    net.add_connection(connection_ep2_ep2, "ep2", "ep2")
+    net.add_connection(connection_ep1_ip, "ep1", "ip")
+    net.add_connection(connection_ep2_ip, "ep2", "ip")
+    net.add_connection(connection_ip_ep1, "ip", "ep1")
+    net.add_connection(connection_ip_ep2, "ip", "ep2")
+    net.add_monitor(monitor_ep1, "ep1")
+    net.add_monitor(monitor_ep2, "ep2")
+    net.add_monitor(monitor_ip, "ip")
+    input_dict = dict(ep1=all_currents, ep2=ep2_currents, ip=ip_zero_input)
+    net.reset_state_variables()
+    net.run(sim_time=sim_time, current_inputs=input_dict)
+
+    return monitor_ep1, monitor_ep2, monitor_ip

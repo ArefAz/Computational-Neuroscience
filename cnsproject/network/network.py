@@ -62,12 +62,12 @@ class Network(torch.nn.Module):
     """
 
     def __init__(
-        self,
-        dt: float = 1.0,
-        learning: bool = True,
-        reward: Optional[AbstractReward] = None,
-        decision: Optional[AbstractDecision] = None,
-        **kwargs
+            self,
+            dt: float = 1.0,
+            learning: bool = True,
+            reward: Optional[AbstractReward] = None,
+            decision: Optional[AbstractDecision] = None,
+            **kwargs
     ) -> None:
         super().__init__()
 
@@ -82,8 +82,10 @@ class Network(torch.nn.Module):
         # Make sure that arguments of your reward and decision classes do not
         # share same names. Their arguments are passed to the network as its
         # keyword arguments.
-        self.reward = reward(**kwargs)
-        self.decision = decision(**kwargs)
+        if reward is not None:
+            self.reward = reward(**kwargs)
+        if decision is not None:
+            self.decision = decision(**kwargs)
 
     def add_layer(self, layer: NeuralPopulation, name: str) -> None:
         """
@@ -105,13 +107,13 @@ class Network(torch.nn.Module):
         self.add_module(name, layer)
 
         layer.train(self.learning)
-        layer.dt = self.dt
+        layer.dt = torch.tensor(self.dt)
 
     def add_connection(
-        self,
-        connection: AbstractConnection,
-        pre: str,
-        post: str
+            self,
+            connection: AbstractConnection,
+            pre: str,
+            post: str
     ) -> None:
         """
         Add a connection between neural populations to the network. The\
@@ -157,11 +159,12 @@ class Network(torch.nn.Module):
         monitor.dt = self.dt
 
     def run(
-        self,
-        time: int,
-        inputs: Dict[str, torch.Tensor] = {},
-        one_step: bool = False,
-        **kwargs
+            self,
+            sim_time: int,
+            inputs: Dict[str, torch.Tensor] = {},
+            current_inputs: Dict[str, torch.Tensor] = {},
+            one_step: bool = False,
+            **kwargs
     ) -> None:
         """
         Simulate network for a specific time duration with the possible given\
@@ -183,7 +186,7 @@ class Network(torch.nn.Module):
 
         Parameters
         ----------
-        time : int
+        sim_time : int
             Simulation time.
         inputs : Dict[str, torch.Tensor], optional
             Mapping of input layer names to their input spike tensors. The\
@@ -212,6 +215,18 @@ class Network(torch.nn.Module):
         None
 
         """
+
+        for t in range(sim_time):
+
+            for layer in self.layers:
+                self.layers[layer].forward(current_inputs.get(layer)[t])
+
+            for connection in self.connections:
+                self.connections[connection].compute()
+
+            for monitor in self.monitors:
+                self.monitors[monitor].record()
+
         clamps = kwargs.get("clamp", {})
         unclamps = kwargs.get("unclamp", {})
         masks = kwargs.get("masks", {})

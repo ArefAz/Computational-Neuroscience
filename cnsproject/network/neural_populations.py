@@ -343,12 +343,15 @@ class LIFPopulation(NeuralPopulation):
 
     def reset_state_variables(self):
         super().reset_state_variables()
-        self.neuron_potentials.data = self.u_rest
+        self.neuron_potentials = torch.ones_like(
+            self.neuron_potentials
+        ) * self.u_rest
 
     def add_to_voltage(self, v: torch.Tensor) -> None:
         assert self.neuron_potentials.shape == v.shape, \
-            "input tensor shape should be the same as the neuron_potentials'"\
-            "shape"
+            "input tensor shape should be the same as the neuron_potentials'" \
+            "shape, but got {} and {}".format(self.neuron_potentials.shape,
+                                              v.shape)
         self.neuron_potentials += v
 
 

@@ -101,6 +101,9 @@ class AbstractConnection(ABC, torch.nn.Module):
         self.wmax = kwargs.get('wmax', 1.)
         self.norm = kwargs.get('norm', None)
 
+    def __str__(self):
+        return self.__class__.__name__
+
     @abstractmethod
     def compute(self) -> None:
         """
@@ -254,7 +257,7 @@ class RandomConnection(AbstractConnection):
             post: NeuralPopulation,
             lr: Union[float, Sequence[float]] = None,
             weight_decay: float = 0.0,
-            num_pre_connections: int = 10,
+            n_pre_connections: int = 10,
             **kwargs
     ) -> None:
         super().__init__(
@@ -264,7 +267,7 @@ class RandomConnection(AbstractConnection):
             weight_decay=weight_decay,
             **kwargs
         )
-        if num_pre_connections > pre.n:
+        if n_pre_connections > pre.n:
             raise ValueError(
                 'number of pre-synapse connections cannot be greater than '
                 'pre-pop #neurons'
@@ -272,15 +275,28 @@ class RandomConnection(AbstractConnection):
         weights_value = torch.tensor((self.wmax - self.wmin) / 2,
                                      dtype=torch.float32)
         # Initializing the weight_matrix with an arbitrary fixed value.
+        # self.register_buffer(
+        #     "weight_matrix",
+        #     torch.ones(*pre.shape, *post.shape) * weights_value
+        # )
+        mean = kwargs.get("mean", 0.5)
+        mean = torch.tensor(mean, dtype=torch.float32)
         self.register_buffer(
             "weight_matrix",
-            torch.ones(*pre.shape, *post.shape) * weights_value
+            torch.FloatTensor(*pre.shape, *post.shape).normal_(
+                mean=mean,
+                std=0.15
+            )
         )
+        self.weight_matrix = torch.where(self.weight_matrix < self.wmin, mean,
+                                         self.weight_matrix)
+        self.weight_matrix = torch.where(self.weight_matrix > self.wmax, mean,
+                                         self.weight_matrix)
         # First all of the possible connections' weights are set to
         # a fixed value, then the specified number them will be set back to
         # zero to have "num_pre_connections" non-zero weight in the
         # weight_matrix
-        self.fill_weight_matrix(num_pre_connections)
+        self.fill_weight_matrix(n_pre_connections)
         if self.weight_matrix is None:
             # noinspection PyTypeChecker
             self.weight_matrix: torch.Tensor = None
