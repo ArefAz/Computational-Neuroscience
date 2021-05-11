@@ -12,6 +12,7 @@ a separate module/package for them.
 
 import torch
 import numpy as np
+import math
 import copy
 import time
 
@@ -21,6 +22,16 @@ from cnsproject.network import Network
 from cnsproject.network.monitors import Monitor
 from cnsproject.network.connections import DenseConnection, RandomConnection
 from typing import List, Union, Iterable
+
+
+def make_gaussian(size, mu, sigma, normalize=False, offset=0):
+    x = np.arange(-offset, size + offset, 1, np.float32)
+
+    gaussian = np.exp(-((x - mu) ** 2 / (2 * sigma ** 2)))
+    if normalize:
+        norm = 1 / (sigma * math.sqrt(2 * math.pi))
+        gaussian *= norm
+    return gaussian
 
 
 def create_line(

@@ -119,7 +119,9 @@ def raster_plot(monitor_excitatory: Monitor,
 
     if event_plot:
         positions = [s[s[:, 0] == i][:, 1] for i in range(n_neurons_ex)]
-        ax.eventplot(positions, colors='C0', linestyles="dotted")
+        ax.eventplot(positions, colors='C0',
+                     linestyles="-."
+                     )
         label = "$Inhibitory$" if is_inhibitory else '$Excitatory$'
         ax.scatter([], [], color='C0', label=label, s=0.75)
         if monitor_inhibitory is not None:
@@ -223,6 +225,56 @@ def activity_plot(monitor_excitatory: Monitor,
         ax.set_ylabel('activation ratios')
 
 
+def raster_plot_encoded_data(data: torch.Tensor, figsize=None, title=None,
+                             ax=None):
+    if ax is None:
+        fig, ax = plt.subplots(1, figsize=figsize)
+    if title is None:
+        title = 'Raster Plot of Encoded Data'
+    ax.title.set_text(title)
+    if len(data.shape) == 3:
+        n_neurons = data.shape[1] * data.shape[2]
+    elif len(data.shape) == 4:
+        n_neurons = data.shape[1] * data.shape[2] * data.shape[3]
+    else:
+        n_neurons = data.shape[1]
+    data = data.reshape(-1, n_neurons)
+    s = np.array(data).T
+    s = np.argwhere(s)
+
+    positions = [s[s[:, 0] == i][:, 1] for i in range(n_neurons)]
+    ax.eventplot(positions, colors='C0', linestyles="dotted")
+
+    ax.set_ylim(bottom=-5)
+    x_offset = int(len(data) * 0.05) // 2
+    ax.set_xlim(left=-x_offset, right=len(data) + x_offset)
+
+
+def activity_plot_encoded_data(data: torch.Tensor, figsize=None,
+                               smooth_size=23, title=None, ax=None):
+    if title is None:
+        title = 'Encoded Data Activity Plot'
+    if ax is None:
+        fig, ax = plt.subplots(1, figsize=figsize)
+    ax.title.set_text(title)
+    x = np.arange(len(data))
+    y = []
+    if len(data.shape) == 3:
+        n_neurons = data.shape[1] * data.shape[2]
+    elif len(data.shape) == 4:
+        n_neurons = data.shape[1] * data.shape[2] * data.shape[3]
+    else:
+        n_neurons = data.shape[1]
+    for i in x:
+        spikes_count = data[i].type(torch.IntTensor).sum() / n_neurons
+        y.append(spikes_count)
+    y = np.array(y)
+    if smooth_size != 0:
+        y = savgol_filter(y, smooth_size, 3)
+    ax.plot(x, y, c='C0', linewidth=0.75)
+    ax.set_yticks([])
+
+
 def draw_connection_plots(m1: Monitor, m2: Monitor, figsize=(16, 8),
                           title: str = 'connection plots'):
     fig, ax = plt.subplots(2, figsize=figsize)
@@ -251,3 +303,27 @@ def draw_decision_plots(monitors: List[Monitor], monitor_names: List[str],
         activity_plot(monitor, ax=ax[1, i], is_inhibitory=is_inhibitory,
                       smooth_size=smooth_size, y_label=y_label)
         input_plot(monitor, ax=ax[2, i], draw_additional=True, y_label=y_label)
+
+
+def draw_encoded_data_plots(encoded_data: torch.Tensor, smooth_size=13,
+                            figsize=None, title=None, histogram=None):
+    if title is None:
+        title = ''
+    if histogram is None:
+        fig, ax = plt.subplots(1, 1, figsize=figsize)
+    else:
+        fig, ax = plt.subplots(1, 4, figsize=figsize)
+    fig.suptitle(title)
+    fig.tight_layout()
+    if histogram is None:
+        raster_plot_encoded_data(encoded_data, ax=ax)
+    else:
+        raster_plot_encoded_data(encoded_data, ax=ax[0])
+    if histogram is not None:
+        activity_plot_encoded_data(encoded_data, smooth_size=smooth_size, ax=ax[1])
+        flipped = torch.flip(encoded_data, dims=(0,))
+        activity_plot_encoded_data(flipped, smooth_size=smooth_size, ax=ax[2],
+                                   title='Mirrored Activity Plot')
+        ax[3].plot(histogram, linewidth=0.75)
+        ax[3].title.set_text('Original Image Histogram')
+        ax[3].set_yticks([])

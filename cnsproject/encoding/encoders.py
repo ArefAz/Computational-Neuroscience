@@ -5,7 +5,11 @@ Module for encoding data into spike.
 from abc import ABC, abstractmethod
 from typing import Optional
 
+import numpy as np
+from scipy import stats
+
 import torch
+from cnsproject.utils import make_gaussian
 
 
 class AbstractEncoder(ABC):
@@ -25,7 +29,7 @@ class AbstractEncoder(ABC):
 
     Arguments
     ---------
-    time : int
+    sim_time : int
         Length of encoded tensor.
     dt : float, Optional
         Simulation time step. The default is 1.0.
@@ -35,18 +39,20 @@ class AbstractEncoder(ABC):
     """
 
     def __init__(
-        self,
-        time: int,
-        dt: Optional[float] = 1.0,
-        device: Optional[str] = "cpu",
-        **kwargs
+            self,
+            sim_time: int,
+            dt: Optional[float] = 1.0,
+            device: Optional[str] = "cpu",
+            data_max_val: Optional[int] = 255,
+            **kwargs
     ) -> None:
-        self.time = time
+        self.sim_time = sim_time
         self.dt = dt
         self.device = device
+        self.data_max_val = data_max_val
 
     @abstractmethod
-    def __call__(self, data: torch.Tensor) -> None:
+    def __call__(self, data: torch.Tensor) -> torch.Tensor:
         """
         Compute the encoded tensor of the given data.
 
@@ -72,31 +78,31 @@ class Time2FirstSpikeEncoder(AbstractEncoder):
     """
 
     def __init__(
-        self,
-        time: int,
-        dt: Optional[float] = 1.0,
-        device: Optional[str] = "cpu",
-        **kwargs
+            self,
+            sim_time: int,
+            dt: Optional[float] = 1.0,
+            device: Optional[str] = "cpu",
+            data_max_val: Optional[int] = 255,
+            **kwargs
     ) -> None:
         super().__init__(
-            time=time,
+            sim_time=sim_time,
             dt=dt,
             device=device,
+            data_max_val=data_max_val,
             **kwargs
         )
-        """
-        TODO.
 
-        Add other attributes if needed and fill the body accordingly.
-        """
+    def __call__(self, data: torch.Tensor) -> torch.Tensor:
+        data: torch.Tensor = data.type(torch.FloatTensor)
+        data_scaled = torch.round(
+            data * (self.sim_time - 1) / self.data_max_val
+        )
+        encoded_data = torch.zeros(self.sim_time, *data_scaled.shape)
+        for t in range(self.sim_time):
+            encoded_data[t] = (data_scaled + t == self.sim_time - 1)
 
-    def __call__(self, data: torch.Tensor) -> None:
-        """
-        TODO.
-
-        Implement the computation for coding the data. Return resulting tensor.
-        """
-        pass
+        return encoded_data
 
 
 class PositionEncoder(AbstractEncoder):
@@ -107,31 +113,60 @@ class PositionEncoder(AbstractEncoder):
     """
 
     def __init__(
-        self,
-        time: int,
-        dt: Optional[float] = 1.0,
-        device: Optional[str] = "cpu",
-        **kwargs
+            self,
+            sim_time: int,
+            n_neurons: int,
+            gaussian_sigma: float,
+            dt: Optional[float] = 1.0,
+            device: Optional[str] = "cpu",
+            data_max_val: Optional[int] = 255,
+            **kwargs
     ) -> None:
         super().__init__(
-            time=time,
+            sim_time=sim_time,
             dt=dt,
             device=device,
             **kwargs
         )
-        """
-        TODO.
+        self.data_max_val = data_max_val
+        self.n_neurons = n_neurons
+        self.g_sigma = gaussian_sigma
+        self.time_thresh: float = kwargs.get('time_thresh', 0.95)
+        self.g_offset: float = self.data_max_val / self.n_neurons / 2
+        self.gaussians = self.create_gaussians()
 
-        Add other attributes if needed and fill the body accordingly.
-        """
+    def create_gaussians(self):
+        gaussians = []
+        offset = self.g_offset
+        means = np.linspace(offset, self.data_max_val + offset, self.n_neurons)
+        for mean in means:
+            gaussian = make_gaussian(self.data_max_val, mean, self.g_sigma,
+                                     offset=0)
+            gaussians.append(gaussian)
 
-    def __call__(self, data: torch.Tensor) -> None:
-        """
-        TODO.
+        return torch.tensor(gaussians)
 
-        Implement the computation for coding the data. Return resulting tensor.
-        """
-        pass
+    def __call__(self, data: torch.Tensor) -> torch.Tensor:
+        encoded_data = torch.zeros(len(self.gaussians), *data.ravel().shape)
+        for i, gaussian in enumerate(self.gaussians):
+            # Calculate the difference tensor (the intersection heights)
+            s_t = 1 - gaussian[data.ravel().tolist()]
+            s_t = torch.where(s_t < self.time_thresh, s_t, torch.ones(1) * -1)
+            encoded_data[i] = s_t
+        encoded_data = encoded_data.reshape(-1, *data.shape)
+        encoded_data = torch.round(encoded_data * self.sim_time)
+        encoded_data = torch.where(encoded_data > 0, encoded_data,
+                                   torch.ones(1) * -1)
+
+        time_encoded_data = torch.zeros(self.sim_time, len(self.gaussians),
+                                        *data.shape)
+        # Distribute the encoded data into zero-one spikes in time
+        # encoded_data has the actual time of the spikes
+        for t in range(self.sim_time):
+            for i, gaussian in enumerate(self.gaussians):
+                time_encoded_data[t][i] = (encoded_data[i] == t)
+
+        return time_encoded_data
 
 
 class PoissonEncoder(AbstractEncoder):
@@ -142,28 +177,31 @@ class PoissonEncoder(AbstractEncoder):
     """
 
     def __init__(
-        self,
-        time: int,
-        dt: Optional[float] = 1.0,
-        device: Optional[str] = "cpu",
-        **kwargs
+            self,
+            sim_time: int,
+            rate_max: int,
+            dt: Optional[float] = 1.0,
+            device: Optional[str] = "cpu",
+            data_max_val: Optional[int] = 255,
+            **kwargs
     ) -> None:
         super().__init__(
-            time=time,
+            sim_time=sim_time,
             dt=dt,
             device=device,
             **kwargs
         )
-        """
-        TODO.
+        self.rate_max = rate_max
+        self.data_max_val = data_max_val
 
-        Add other attributes if needed and fill the body accordingly.
-        """
-
-    def __call__(self, data: torch.Tensor) -> None:
-        """
-        TODO.
-
-        Implement the computation for coding the data. Return resulting tensor.
-        """
-        pass
+    def __call__(self, data: torch.Tensor) -> torch.Tensor:
+        data: torch.Tensor = data.type(torch.FloatTensor).to(self.device)
+        r_x = data * self.rate_max / self.data_max_val
+        r_x_dt = r_x * (self.dt / self.sim_time)
+        encoded_data = torch.zeros(self.sim_time, *data.shape)
+        torch.random.manual_seed(0)
+        torch.manual_seed(0)
+        p = torch.rand_like(encoded_data)
+        for t in range(self.sim_time):
+            encoded_data[t] = torch.less(p[t], r_x_dt)
+        return encoded_data
