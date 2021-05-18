@@ -83,7 +83,7 @@ class AbstractConnection(ABC, torch.nn.Module):
 
         neuron_type = kwargs.get('neuron_type', LIFPopulation)
         self.pre: neuron_type = pre
-        self.post: neuron_type = post
+        self.post: NeuralPopulation = post
 
         self.weight_decay = weight_decay
 
@@ -180,7 +180,7 @@ class DenseConnection(AbstractConnection):
             **kwargs
         )
 
-        self.j0 = kwargs.get('j0', 80)
+        self.j0 = kwargs.get('j0', 0.5)
         self.sig0 = kwargs.get('sig0', 1e-10)
         self.wmin = torch.tensor(self.wmin)
         self.wmax = torch.tensor(self.wmax)
@@ -191,7 +191,7 @@ class DenseConnection(AbstractConnection):
         # Initializing the weight_matrix with a normal distribution
         # with specified mean & std
         self.register_buffer(
-            "weight_matrix",
+            "w",
             torch.FloatTensor(*pre.shape, *post.shape).normal_(
                 mean=mean,
                 std=std
@@ -199,19 +199,19 @@ class DenseConnection(AbstractConnection):
         )
 
         # Make sure non of the weights are outside of [wmin, wmax]
-        self.weight_matrix = torch.where(self.weight_matrix < self.wmin, mean,
-                                         self.weight_matrix)
-        self.weight_matrix = torch.where(self.weight_matrix > self.wmax, mean,
-                                         self.weight_matrix)
+        self.w = torch.where(self.w < self.wmin, mean,
+                                         self.w)
+        self.w = torch.where(self.w > self.wmax, mean,
+                                         self.w)
         # Remove self connections
         if pre == post:
-            self.weight_matrix.fill_diagonal_(0)
-        if self.weight_matrix is None:
+            self.w.fill_diagonal_(0)
+        if self.w is None:
             # noinspection PyTypeChecker
-            self.weight_matrix: torch.Tensor = None
+            self.w: torch.Tensor = None
         # Negating all the weights if pre-synaptic population is inhibitory
         if self.pre.is_inhibitory:
-            self.weight_matrix *= -1
+            self.w *= -1
 
     def compute(self) -> None:
         # calculating the input of the post-synaptic neurons,
@@ -219,20 +219,14 @@ class DenseConnection(AbstractConnection):
         # In the next line we multiply the spike states (of all pre-neurons)
         # in the weight_matrix (i.e., selecting the rows that the corresponding
         # neuron has spiked)
-        additive_voltages: torch.Tensor = (self.weight_matrix.T * self.pre.s).T
+        additive_voltages: torch.Tensor = (self.w.T * self.pre.s).T
         # Then, here we add the effect of all spiked pre-synaptic neurons
         # for each post-synaptic neuron
         additive_voltages = additive_voltages.sum(dim=0)
         self.post.add_to_voltage(additive_voltages)
 
     def update(self, **kwargs) -> None:
-        """
-        TODO.
-
-        Update the connection weights based on the learning rule computations.\
-        You might need to call the parent method.
-        """
-        pass
+        super().update(**kwargs)
 
     def reset_state_variables(self) -> None:
         """
@@ -282,42 +276,42 @@ class RandomConnection(AbstractConnection):
         mean = kwargs.get("mean", 0.5)
         mean = torch.tensor(mean, dtype=torch.float32)
         self.register_buffer(
-            "weight_matrix",
+            "w",
             torch.FloatTensor(*pre.shape, *post.shape).normal_(
                 mean=mean,
                 std=0.15
             )
         )
-        self.weight_matrix = torch.where(self.weight_matrix < self.wmin, mean,
-                                         self.weight_matrix)
-        self.weight_matrix = torch.where(self.weight_matrix > self.wmax, mean,
-                                         self.weight_matrix)
+        self.w = torch.where(self.w < self.wmin, mean,
+                                         self.w)
+        self.w = torch.where(self.w > self.wmax, mean,
+                                         self.w)
         # First all of the possible connections' weights are set to
         # a fixed value, then the specified number them will be set back to
         # zero to have "num_pre_connections" non-zero weight in the
         # weight_matrix
         self.fill_weight_matrix(n_pre_connections)
-        if self.weight_matrix is None:
+        if self.w is None:
             # noinspection PyTypeChecker
-            self.weight_matrix: torch.Tensor = None
+            self.w: torch.Tensor = None
         if self.pre.is_inhibitory:
-            self.weight_matrix *= -1
+            self.w *= -1
 
     def fill_weight_matrix(self, num_pre_connections: int) -> None:
-        for i in range(self.weight_matrix.shape[1]):
+        for i in range(self.w.shape[1]):
             # randomly select non-connections
             zero_indexes = np.random.choice(
                 self.pre.n,
                 self.pre.n - num_pre_connections,
                 replace=False
             )
-            self.weight_matrix[:, i][zero_indexes] = 0
+            self.w[:, i][zero_indexes] = 0
         # Remove self connections
         if self.pre == self.post:
-            self.weight_matrix.fill_diagonal_(0)
+            self.w.fill_diagonal_(0)
 
     def compute(self) -> None:
-        additive_voltages: torch.Tensor = (self.weight_matrix.T * self.pre.s).T
+        additive_voltages: torch.Tensor = (self.w.T * self.pre.s).T
         additive_voltages = additive_voltages.sum(dim=0)
         self.post.add_to_voltage(additive_voltages)
 

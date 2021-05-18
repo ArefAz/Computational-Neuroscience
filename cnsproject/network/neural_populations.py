@@ -77,6 +77,7 @@ class NeuralPopulation(torch.nn.Module):
 
     """
 
+    # noinspection PyTypeChecker
     def __init__(
             self,
             shape: Iterable[int],
@@ -96,7 +97,8 @@ class NeuralPopulation(torch.nn.Module):
         self.additive_spike_trace = additive_spike_trace
 
         if self.spike_trace:
-            # You can use `torch.Tensor()` instead of `torch.zeros(*shape)` if `reset_state_variables`
+            # You can use `torch.Tensor()` instead of `torch.zeros(*shape)`
+            # if `reset_state_variables`
             # is intended to be called before every simulation.
             self.register_buffer("traces", torch.zeros(*self.shape))
             self.register_buffer("tau_s", torch.tensor(tau_s))
@@ -104,14 +106,24 @@ class NeuralPopulation(torch.nn.Module):
             if self.additive_spike_trace:
                 self.register_buffer("trace_scale", torch.tensor(trace_scale))
 
-            self.register_buffer("trace_decay", torch.empty_like(self.tau_s))
+            self.register_buffer("trace_decay", torch.ones_like(self.tau_s))
 
         self.is_inhibitory = is_inhibitory
         self.learning = learning
+        self.do_exp_decay: bool = kwargs.get("do_exp_decay", False)
 
-        # You can use `torch.Tensor()` instead of `torch.zeros(*shape, dtype=torch.bool)` if \
-        # `reset_state_variables` is intended to be called before every simulation.
+        # You can use `torch.Tensor()` instead of
+        # `torch.zeros(*shape, dtype=torch.bool)` if
+        # `reset_state_variables` is intended to be
+        # called before every simulation.
         self.register_buffer("s", torch.zeros(*self.shape, dtype=torch.bool))
+
+        if self.s is None:
+            self.s: torch.Tensor = None
+            self.traces: torch.Tensor = None
+            self.tau_s: torch.Tensor = None
+            self.trace_scale: torch.Tensor = None
+            self.trace_decay: torch.Tensor = None
 
     @abstractmethod
     def forward(self, traces: torch.Tensor) -> None:
@@ -129,10 +141,13 @@ class NeuralPopulation(torch.nn.Module):
 
         """
         if self.spike_trace:
-            self.traces *= self.trace_decay
+            if self.do_exp_decay:
+                self.traces += -(self.dt / self.tau_s) * self.traces
+            else:
+                self.traces *= self.trace_decay
 
             if self.additive_spike_trace:
-                self.traces += self.trace_scale * self.s.float()
+                self.traces += self.trace_scale * self.s
             else:
                 self.traces.masked_fill_(self.s, 1)
 
@@ -248,6 +263,7 @@ class LIFPopulation(NeuralPopulation):
             trace_scale=trace_scale,
             is_inhibitory=is_inhibitory,
             learning=learning,
+            **kwargs
         )
         self._init_kwargs(kwargs)
 
@@ -306,8 +322,8 @@ class LIFPopulation(NeuralPopulation):
         self.in_current = traces
         self.compute_potential(traces)
         self.compute_spike()
-        super().forward(traces)
         self.compute_decay()
+        super().forward(traces)
 
     def compute_potential(self, in_current: torch.Tensor) -> None:
         u_update = -(self.dt / self.tau) * (
@@ -333,12 +349,6 @@ class LIFPopulation(NeuralPopulation):
         )
 
     def compute_decay(self) -> None:
-        """
-        TODO.
-
-        Implement the dynamics of decays. You might need to call the method from
-        parent class.
-        """
         super().compute_decay()
 
     def reset_state_variables(self):
@@ -383,7 +393,7 @@ class InputPopulation(NeuralPopulation):
             shape: Iterable[int],
             spike_trace: bool = True,
             additive_spike_trace: bool = True,
-            tau_s: Union[float, torch.Tensor] = 10.,
+            tau_s: Union[float, torch.Tensor] = 15.,
             trace_scale: Union[float, torch.Tensor] = 1.,
             learning: bool = True,
             **kwargs
@@ -395,6 +405,7 @@ class InputPopulation(NeuralPopulation):
             tau_s=tau_s,
             trace_scale=trace_scale,
             learning=learning,
+            **kwargs
         )
 
     def forward(self, traces: torch.Tensor) -> None:
@@ -412,7 +423,7 @@ class InputPopulation(NeuralPopulation):
 
         """
         self.s = traces
-
+        super().compute_decay()
         super().forward(traces)
 
     def reset_state_variables(self) -> None:

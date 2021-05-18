@@ -107,7 +107,9 @@ def raster_plot(monitor_excitatory: Monitor,
                 title: str = None,
                 is_inhibitory: bool = False,
                 event_plot: bool = False,
-                figsize=(15, 3), ax=None, y_label: bool = True):
+                figsize=(15, 3), ax=None, y_label: bool = True,
+                legend: bool = True, set_xlim: bool = True,
+                y_offset: int = 15):
     if ax is None:
         fig, ax = plt.subplots(1, figsize=figsize)
 
@@ -138,9 +140,10 @@ def raster_plot(monitor_excitatory: Monitor,
             ax.scatter([], [], color='C1', label=label, s=0.75)
     else:
         for i in range(n_neurons_ex):
-            y = np.where(spikes_excitatory[:, i], (i + 10), -10).astype(int)
+            y = np.where(spikes_excitatory[:, i], (i + y_offset), -10).astype(int)
+            label = '$Excitatory$' if legend else None
             if i == 0:
-                ax.scatter(x, y, color='C0', s=0.75, label='$Excitatory$')
+                ax.scatter(x, y, color='C0', s=0.75, label=label)
             else:
                 ax.scatter(x, y, color='C0', s=0.75)
         n_neurons_in = 0
@@ -150,14 +153,17 @@ def raster_plot(monitor_excitatory: Monitor,
             for i in range(n_neurons_in):
                 y = np.where(spikes_inhibitory[:, i], (i + 15 + n_neurons_ex),
                              -10).astype(int)
+                label = '$Inhibitory$' if legend else None
                 if i == 0:
-                    ax.scatter(x, y, color='C1', s=0.75, label='$Inhibitory$')
+                    ax.scatter(x, y, color='C1', s=0.75, label=label)
                 else:
                     ax.scatter(x, y, color='C1', s=0.75)
-        ax.set_ylim(bottom=-1, top=n_neurons_ex + n_neurons_in + 20)
+        ax.set_ylim(bottom=-1, )
 
-    ax.set_xlim([0, len(spikes_excitatory)])
-    ax.legend()
+    if set_xlim:
+        ax.set_xlim([0, len(spikes_excitatory)])
+    if legend:
+        ax.legend()
     if title is None:
         title = 'raster plot'
     ax.title.set_text(title)
@@ -244,8 +250,7 @@ def raster_plot_encoded_data(data: torch.Tensor, figsize=None, title=None,
 
     positions = [s[s[:, 0] == i][:, 1] for i in range(n_neurons)]
     ax.eventplot(positions, colors='C0', linestyles="dotted")
-
-    ax.set_ylim(bottom=-5)
+    # ax.set_ylim(bottom=-5)
     x_offset = int(len(data) * 0.05) // 2
     ax.set_xlim(left=-x_offset, right=len(data) + x_offset)
 
@@ -317,10 +322,12 @@ def draw_encoded_data_plots(encoded_data: torch.Tensor, smooth_size=13,
     fig.tight_layout()
     if histogram is None:
         raster_plot_encoded_data(encoded_data, ax=ax)
+        # ax.set_ylim(bottom=-0.25)
     else:
         raster_plot_encoded_data(encoded_data, ax=ax[0])
     if histogram is not None:
-        activity_plot_encoded_data(encoded_data, smooth_size=smooth_size, ax=ax[1])
+        activity_plot_encoded_data(encoded_data, smooth_size=smooth_size,
+                                   ax=ax[1])
         flipped = torch.flip(encoded_data, dims=(0,))
         activity_plot_encoded_data(flipped, smooth_size=smooth_size, ax=ax[2],
                                    title='Mirrored Activity Plot')

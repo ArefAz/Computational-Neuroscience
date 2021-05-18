@@ -43,6 +43,9 @@ class AbstractDecision(ABC):
         """
         pass
 
+    def __call__(self, *args, **kwargs):
+        pass
+
 
 class WinnerTakeAllDecision(AbstractDecision):
     """

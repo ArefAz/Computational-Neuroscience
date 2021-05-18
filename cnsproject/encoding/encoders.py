@@ -199,8 +199,6 @@ class PoissonEncoder(AbstractEncoder):
         r_x = data * self.rate_max / self.data_max_val
         r_x_dt = r_x * (self.dt / self.sim_time)
         encoded_data = torch.zeros(self.sim_time, *data.shape)
-        torch.random.manual_seed(0)
-        torch.manual_seed(0)
         p = torch.rand_like(encoded_data)
         for t in range(self.sim_time):
             encoded_data[t] = torch.less(p[t], r_x_dt)

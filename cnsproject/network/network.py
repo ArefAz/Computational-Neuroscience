@@ -77,6 +77,7 @@ class Network(torch.nn.Module):
         self.connections = {}
         self.monitors = {}
 
+        self.learning = learning
         self.train(learning)
 
         # Make sure that arguments of your reward and decision classes do not
@@ -86,6 +87,8 @@ class Network(torch.nn.Module):
             self.reward = reward(**kwargs)
         if decision is not None:
             self.decision = decision(**kwargs)
+        self.train_ratio: float = kwargs.get("train_ratio", None)
+        self.eval_time: bool = False
 
     def add_layer(self, layer: NeuralPopulation, name: str) -> None:
         """
@@ -161,8 +164,9 @@ class Network(torch.nn.Module):
     def run(
             self,
             sim_time: int,
-            inputs: Dict[str, torch.Tensor] = {},
-            current_inputs: Dict[str, torch.Tensor] = {},
+            inputs=None,
+            current_inputs=None,
+            test_inputs=None,
             one_step: bool = False,
             **kwargs
     ) -> None:
@@ -180,18 +184,16 @@ class Network(torch.nn.Module):
         Also, make sure to call `self.reset_state_variables()` before starting the \
         simulation.
 
-        TODO.
-
-        Implement the body of this method.
-
         Parameters
         ----------
-        sim_time : int
+        :param test_inputs:
+        :param sim_time : int
             Simulation time.
-        inputs : Dict[str, torch.Tensor], optional
+        :param inputs : Dict[str, torch.Tensor], optional
             Mapping of input layer names to their input spike tensors. The\
             default is {}.
-        one_step : bool, optional
+        :param current_inputs : Dict[str, torch.Tensor], optional
+        :param one_step : bool, optional
             Whether to propagate the inputs all the way through the network in\
             a single simulation step. The default is False.
 
@@ -200,7 +202,7 @@ class Network(torch.nn.Module):
         clamp : Dict[str, torch.Tensor]
             Mapping of layer names to boolean masks if neurons should be clamped
             to spiking.
-        unclamp : Dict[str, torch.Tensor]
+        un_clamp : Dict[str, torch.Tensor]
             Mapping of layer names to boolean masks if neurons should be clamped
             not to spiking.
         masks : Dict[str, torch.Tensor]
@@ -213,32 +215,49 @@ class Network(torch.nn.Module):
         Returns
         -------
         None
-
         """
 
+        if inputs is None:
+            inputs: Dict[str, torch.Tensor] = {}
+        if current_inputs is None:
+            current_inputs: Dict[str, torch.Tensor] = {}
+        if test_inputs is None:
+            test_inputs: Dict[str, torch.Tensor] = {}
+        clamps = kwargs.get("clamp", {})
+        un_clamps = kwargs.get("un_clamp", {})
+        masks = kwargs.get("masks", {})
+
         for t in range(sim_time):
+            if self.train_ratio is not None and t == int(
+                    sim_time * self.train_ratio):
+                self.learning = False
+                self.eval_time = True
+
+            if self.train_ratio is not None and t == int(
+                    sim_time * (1 + self.train_ratio) / 2
+            ):
+                self.eval_time = False
 
             for layer in self.layers:
-                self.layers[layer].forward(current_inputs.get(layer)[t])
+                if self.learning or self.eval_time:
+                    self.layers[layer].forward(current_inputs.get(layer)[t])
+                else:
+                    self.layers[layer].forward(test_inputs.get(layer)[t])
 
             for connection in self.connections:
+                if self.learning:
+                    self.connections[connection].update()
                 self.connections[connection].compute()
 
             for monitor in self.monitors:
                 self.monitors[monitor].record()
 
-        clamps = kwargs.get("clamp", {})
-        unclamps = kwargs.get("unclamp", {})
-        masks = kwargs.get("masks", {})
-
     def reset_state_variables(self) -> None:
         """
         Reset all internal state variables.
-
         Returns
         -------
         None
-
         """
         for layer in self.layers:
             self.layers[layer].reset_state_variables()
@@ -252,17 +271,14 @@ class Network(torch.nn.Module):
     def train(self, mode: bool = True) -> "torch.nn.Moudle":
         """
         Set the population's training mode.
-
         Parameters
         ----------
         mode : bool, optional
             Mode of training. `True` turns on the training while `False` turns\
             it off. The default is True.
-
         Returns
         -------
         torch.nn.Module
-
         """
         self.learning = mode
         return super().train(mode)

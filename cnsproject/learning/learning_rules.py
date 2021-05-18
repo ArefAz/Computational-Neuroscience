@@ -39,19 +39,19 @@ class LearningRule(ABC):
     """
 
     def __init__(
-        self,
-        connection: AbstractConnection,
-        lr: Optional[Union[float, Sequence[float]]] = None,
-        weight_decay: float = 0.,
-        **kwargs
+            self,
+            connection: AbstractConnection,
+            lr: Optional[Union[float, Sequence[float]]] = None,
+            weight_decay: float = 0.,
+            **kwargs
     ) -> None:
         if lr is None:
             lr = [0., 0.]
         elif isinstance(lr, float) or isinstance(lr, int):
             lr = [lr, lr]
 
+        self.connection = connection
         self.lr = torch.tensor(lr, dtype=torch.float)
-
         self.weight_decay = 1 - weight_decay if weight_decay else 1.
 
     def update(self) -> None:
@@ -67,7 +67,7 @@ class LearningRule(ABC):
             self.connection.w *= self.weight_decay
 
         if (
-            self.connection.wmin != -np.inf or self.connection.wmax != np.inf
+                self.connection.wmin != -np.inf or self.connection.wmax != np.inf
         ) and not isinstance(self.connection, NoOp):
             self.connection.w.clamp_(self.connection.wmin,
                                      self.connection.wmax)
@@ -91,11 +91,11 @@ class NoOp(LearningRule):
     """
 
     def __init__(
-        self,
-        connection: AbstractConnection,
-        lr: Optional[Union[float, Sequence[float]]] = None,
-        weight_decay: float = 0.,
-        **kwargs
+            self,
+            connection: AbstractConnection,
+            lr: Optional[Union[float, Sequence[float]]] = None,
+            weight_decay: float = 0.,
+            **kwargs
     ) -> None:
         super().__init__(
             connection=connection,
@@ -121,16 +121,16 @@ class STDP(LearningRule):
     """
     Spike-Time Dependent Plasticity learning rule.
 
-    Implement the dynamics of STDP learning rule.You might need to implement\
+    Implement the dynamics of STDP learning rule. You might need to implement\
     different update rules based on type of connection.
     """
 
     def __init__(
-        self,
-        connection: AbstractConnection,
-        lr: Optional[Union[float, Sequence[float]]] = None,
-        weight_decay: float = 0.,
-        **kwargs
+            self,
+            connection: AbstractConnection,
+            lr: Optional[Union[float, Sequence[float]]] = None,
+            weight_decay: float = 0.,
+            **kwargs
     ) -> None:
         super().__init__(
             connection=connection,
@@ -138,21 +138,33 @@ class STDP(LearningRule):
             weight_decay=weight_decay,
             **kwargs
         )
-        """
-        TODO.
-
-        Consider the additional required parameters and fill the body\
-        accordingly.
-        """
+        self.is_flat: bool = kwargs.get("is_flat", False)
+        self.weight_dependant: bool = kwargs.get("weight_dependant", False)
+        # noinspection PyTypeChecker
+        self.update_mask: torch.Tensor = None
+        self.pre_traces = torch.zeros_like(self.connection.pre.traces)
+        self.post_traces = torch.zeros_like(self.connection.post.traces)
 
     def update(self, **kwargs) -> None:
-        """
-        TODO.
+        if self.update_mask is None:
+            self.update_mask = torch.ones(*self.connection.w.T.shape).bool()
+        self.pre_traces = self.connection.pre.traces
+        self.post_traces = self.connection.post.traces
+        if self.is_flat:
+            self.pre_traces = torch.where(self.pre_traces > 0.05, 1, 0)
+            self.post_traces = torch.where(self.post_traces > 0.05, 1, 0)
+        pre_s = self.connection.pre.s
+        post_s = self.connection.post.s
 
-        Implement the dynamics and updating rule. You might need to call the\
-        parent method.
-        """
-        pass
+        pre_spiked = (self.update_mask * pre_s).T
+        update_pre_s = -self.lr[0] * self.post_traces * pre_spiked
+        post_spiked = (self.update_mask.T * post_s).T
+        update_post_s = self.lr[1] * self.pre_traces * post_spiked
+        update_post_s = update_post_s.T
+
+        update_matrix = update_pre_s + update_post_s
+        self.connection.w += update_matrix
+        super().update()
 
 
 class FlatSTDP(LearningRule):
@@ -164,11 +176,11 @@ class FlatSTDP(LearningRule):
     """
 
     def __init__(
-        self,
-        connection: AbstractConnection,
-        lr: Optional[Union[float, Sequence[float]]] = None,
-        weight_decay: float = 0.,
-        **kwargs
+            self,
+            connection: AbstractConnection,
+            lr: Optional[Union[float, Sequence[float]]] = None,
+            weight_decay: float = 0.,
+            **kwargs
     ) -> None:
         super().__init__(
             connection=connection,
@@ -202,11 +214,11 @@ class RSTDP(LearningRule):
     """
 
     def __init__(
-        self,
-        connection: AbstractConnection,
-        lr: Optional[Union[float, Sequence[float]]] = None,
-        weight_decay: float = 0.,
-        **kwargs
+            self,
+            connection: AbstractConnection,
+            lr: Optional[Union[float, Sequence[float]]] = None,
+            weight_decay: float = 0.,
+            **kwargs
     ) -> None:
         super().__init__(
             connection=connection,
@@ -241,11 +253,11 @@ class FlatRSTDP(LearningRule):
     """
 
     def __init__(
-        self,
-        connection: AbstractConnection,
-        lr: Optional[Union[float, Sequence[float]]] = None,
-        weight_decay: float = 0.,
-        **kwargs
+            self,
+            connection: AbstractConnection,
+            lr: Optional[Union[float, Sequence[float]]] = None,
+            weight_decay: float = 0.,
+            **kwargs
     ) -> None:
         super().__init__(
             connection=connection,
