@@ -109,7 +109,7 @@ def raster_plot(monitor_excitatory: Monitor,
                 event_plot: bool = False,
                 figsize=(15, 3), ax=None, y_label: bool = True,
                 legend: bool = True, set_xlim: bool = True,
-                y_offset: int = 15):
+                y_offset: int = 15, size: float = 0.75):
     if ax is None:
         fig, ax = plt.subplots(1, figsize=figsize)
 
@@ -125,7 +125,7 @@ def raster_plot(monitor_excitatory: Monitor,
                      linestyles="-."
                      )
         label = "$Inhibitory$" if is_inhibitory else '$Excitatory$'
-        ax.scatter([], [], color='C0', label=label, s=0.75)
+        ax.scatter([], [], color='C0', label=label, s=size)
         if monitor_inhibitory is not None:
             spikes_inhibitory = monitor_inhibitory.get("s").cpu()
             n_neurons_in = len(spikes_inhibitory.T)
@@ -137,15 +137,16 @@ def raster_plot(monitor_excitatory: Monitor,
             ax.eventplot(positions, colors='C1', lineoffsets=1,
                          linelengths=0.75)
             label = "$Inhibitory$"
-            ax.scatter([], [], color='C1', label=label, s=0.75)
+            ax.scatter([], [], color='C1', label=label, s=size)
     else:
         for i in range(n_neurons_ex):
-            y = np.where(spikes_excitatory[:, i], (i + y_offset), -10).astype(int)
+            y = np.where(spikes_excitatory[:, i], (i + y_offset), -10).astype(
+                int)
             label = '$Excitatory$' if legend else None
             if i == 0:
-                ax.scatter(x, y, color='C0', s=0.75, label=label)
+                ax.scatter(x, y, color='C0', s=size, label=label)
             else:
-                ax.scatter(x, y, color='C0', s=0.75)
+                ax.scatter(x, y, color='C0', s=size)
         n_neurons_in = 0
         if monitor_inhibitory is not None:
             spikes_inhibitory = monitor_inhibitory.get("s").cpu()
@@ -155,9 +156,9 @@ def raster_plot(monitor_excitatory: Monitor,
                              -10).astype(int)
                 label = '$Inhibitory$' if legend else None
                 if i == 0:
-                    ax.scatter(x, y, color='C1', s=0.75, label=label)
+                    ax.scatter(x, y, color='C1', s=size, label=label)
                 else:
-                    ax.scatter(x, y, color='C1', s=0.75)
+                    ax.scatter(x, y, color='C1', s=size)
         ax.set_ylim(bottom=-1, )
 
     if set_xlim:

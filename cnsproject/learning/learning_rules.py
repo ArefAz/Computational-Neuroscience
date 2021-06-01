@@ -8,6 +8,7 @@ from typing import Union, Optional, Sequence
 import numpy as np
 import torch
 
+from .rewards import AbstractReward
 from ..network.connections import AbstractConnection
 
 
@@ -167,6 +168,64 @@ class STDP(LearningRule):
         super().update()
 
 
+class RSTDP(LearningRule):
+    """
+    Reward-modulated Spike-Time Dependent Plasticity learning rule.
+
+    Implement the dynamics of RSTDP learning rule. You might need to implement\
+    different update rules based on type of connection.
+    """
+
+    def __init__(
+            self,
+            connection: AbstractConnection,
+            lr: Optional[Union[float, Sequence[float]]] = None,
+            weight_decay: float = 0.,
+            **kwargs
+    ) -> None:
+        super().__init__(
+            connection=connection,
+            lr=lr,
+            weight_decay=weight_decay,
+            **kwargs
+        )
+        self.is_flat: bool = kwargs.get("is_flat", False)
+        # noinspection PyTypeChecker
+        self.update_mask: torch.Tensor = None
+        self.pre_traces = torch.zeros_like(self.connection.pre.traces)
+        self.post_traces = torch.zeros_like(self.connection.post.traces)
+        self.tau_c = kwargs.get("tau_c", 500.)
+        self.tau_c = torch.tensor(self.tau_c, dtype=torch.float32)
+        # noinspection PyTypeChecker
+        self.c: torch.Tensor = None
+
+    def update(self, **kwargs) -> None:
+        if self.c is None:
+            self.c = torch.zeros_like(self.connection.w)
+        reward: AbstractReward = kwargs.get("reward")
+        if reward is None:
+            raise RuntimeError("Reward should be passed to RSTDP's update!")
+        d = reward.get_d()
+        if self.update_mask is None:
+            self.update_mask = torch.ones(*self.connection.w.T.shape).bool()
+        self.pre_traces = self.connection.pre.traces
+        self.post_traces = self.connection.post.traces
+
+        pre_s = self.connection.pre.s
+        post_s = self.connection.post.s
+
+        pre_spiked = (self.update_mask * pre_s).T
+        update_pre_s = -self.lr[0] * self.post_traces * pre_spiked
+        post_spiked = (self.update_mask.T * post_s).T
+        update_post_s = self.lr[1] * self.pre_traces * post_spiked
+        update_post_s = update_post_s.T
+
+        stdp_update_matrix = update_pre_s + update_post_s
+        self.c += -(self.c / self.tau_c) + stdp_update_matrix
+        self.connection.w += self.c * d
+        super().update()
+
+
 class FlatSTDP(LearningRule):
     """
     Flattened Spike-Time Dependent Plasticity learning rule.
@@ -205,45 +264,6 @@ class FlatSTDP(LearningRule):
         pass
 
 
-class RSTDP(LearningRule):
-    """
-    Reward-modulated Spike-Time Dependent Plasticity learning rule.
-
-    Implement the dynamics of RSTDP learning rule. You might need to implement\
-    different update rules based on type of connection.
-    """
-
-    def __init__(
-            self,
-            connection: AbstractConnection,
-            lr: Optional[Union[float, Sequence[float]]] = None,
-            weight_decay: float = 0.,
-            **kwargs
-    ) -> None:
-        super().__init__(
-            connection=connection,
-            lr=lr,
-            weight_decay=weight_decay,
-            **kwargs
-        )
-        """
-        TODO.
-
-        Consider the additional required parameters and fill the body\
-        accordingly.
-        """
-
-    def update(self, **kwargs) -> None:
-        """
-        TODO.
-
-        Implement the dynamics and updating rule. You might need to call the
-        parent method. Make sure to consider the reward value as a given keyword
-        argument.
-        """
-        pass
-
-
 class FlatRSTDP(LearningRule):
     """
     Flattened Reward-modulated Spike-Time Dependent Plasticity learning rule.
@@ -252,6 +272,7 @@ class FlatRSTDP(LearningRule):
     different update rules based on type of connection.
     """
 
+    # noinspection PyTypeChecker
     def __init__(
             self,
             connection: AbstractConnection,
@@ -265,19 +286,36 @@ class FlatRSTDP(LearningRule):
             weight_decay=weight_decay,
             **kwargs
         )
-        """
-        TODO.
-
-        Consider the additional required parameters and fill the body\
-        accordingly.
-        """
+        self.update_mask: torch.Tensor = None
+        self.pre_traces = torch.zeros_like(self.connection.pre.traces)
+        self.post_traces = torch.zeros_like(self.connection.post.traces)
+        self.c: torch.Tensor = None
 
     def update(self, **kwargs) -> None:
-        """
-        TODO.
+        if self.c is None:
+            self.c = torch.zeros_like(self.connection.w)
 
-        Implement the dynamics and updating rule. You might need to call the
-        parent method. Make sure to consider the reward value as a given keyword
-        argument.
-        """
-        pass
+        reward: AbstractReward = kwargs.get("reward")
+        if reward is None:
+            raise RuntimeError("Reward should be passed to RSTDP's update!")
+        d = reward.get_d()
+        if self.update_mask is None:
+            self.update_mask = torch.ones(*self.connection.w.T.shape).bool()
+        self.pre_traces = self.connection.pre.traces
+        self.post_traces = self.connection.post.traces
+        self.pre_traces = torch.where(self.pre_traces > 0.05, 1, 0)
+        self.post_traces = torch.where(self.post_traces > 0.05, 1, 0)
+
+        pre_s = self.connection.pre.s
+        post_s = self.connection.post.s
+
+        pre_spiked = (self.update_mask * pre_s).T
+        update_pre_s = -self.lr[0] * self.post_traces * pre_spiked
+        post_spiked = (self.update_mask.T * post_s).T
+        update_post_s = self.lr[1] * self.pre_traces * post_spiked
+        update_post_s = update_post_s.T
+
+        flat_stdp_update_matrix = update_pre_s + update_post_s
+        self.c = flat_stdp_update_matrix
+        self.connection.w += self.c * d
+        super().update()

@@ -1,12 +1,6 @@
-"""
-Module for reward dynamics.
-
-TODO.
-
-Define your reward functions here.
-"""
-
 from abc import ABC, abstractmethod
+
+import torch
 
 
 class AbstractReward(ABC):
@@ -25,6 +19,13 @@ class AbstractReward(ABC):
     remember to call it your learning rule computations in the \
     right place.
     """
+
+    def __init__(self, **kwargs):
+        tau_d = kwargs.get("tau_d")
+        if tau_d is None:
+            raise RuntimeError('tau_d is a mandatory argument for reward!')
+        self.d = torch.zeros(1, dtype=torch.float32)
+        self.tau_d = torch.tensor(tau_d, dtype=torch.float32)
 
     @abstractmethod
     def compute(self, **kwargs) -> None:
@@ -51,5 +52,31 @@ class AbstractReward(ABC):
         """
         pass
 
-    def __call__(self, *args, **kwargs):
+    def get_d(self):
+        return self.d
+
+
+class SimpleReward(AbstractReward):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.da_t = None
+
+    def compute(self, **kwargs) -> None:
+        self.da_t = torch.tensor(kwargs.get("da_t", 0.))
+        self.d += -(self.d / self.tau_d) + self.da_t
+
+    def update(self, **kwargs) -> None:
+        pass
+
+
+class FlatReward(AbstractReward):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.da_t = None
+
+    def compute(self, **kwargs) -> None:
+        self.da_t = torch.tensor(kwargs.get("da_t", 0.))
+        self.d = self.da_t
+
+    def update(self, **kwargs) -> None:
         pass

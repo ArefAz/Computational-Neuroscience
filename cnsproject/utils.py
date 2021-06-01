@@ -406,3 +406,58 @@ def run_decision_simulation(**kwargs):
     net.run(sim_time=sim_time, current_inputs=input_dict)
 
     return monitor_ep1, monitor_ep2, monitor_ip
+
+
+class SimpleRewardCalculator(object):
+    def __init__(self, out_pop: NeuralPopulation, d_ratio: float,
+                 d_values: list):
+        self.out_pop = out_pop
+        self.n = self.out_pop.n
+        if self.n != 2:
+            raise ValueError('Out-pop needs exactly 2 neurons.')
+        self.d_ratio = d_ratio
+        self.da_t = 0
+        self.d_values = d_values
+        self.sim_time: int = 0
+
+    def set_sim_time(self, sim_time: int):
+        self.sim_time = sim_time
+
+    def calc_reward(self, t: int):
+        spikes = self.out_pop.s
+        pattern_id = self.find_pattern(t)
+        if pattern_id == 0:
+            if spikes[0] and not spikes[1]:
+                self.da_t = self.d_values[0]
+            elif spikes[0] and spikes[1]:
+                self.da_t = self.d_values[1]
+            elif not spikes[0] and spikes[1]:
+                self.da_t = self.d_values[2]
+            else:
+                self.da_t = 0
+        elif pattern_id == 1:
+            if spikes[1] and not spikes[0]:
+                self.da_t = self.d_values[0]
+            elif spikes[1] and spikes[0]:
+                self.da_t = self.d_values[1]
+            elif not spikes[1] and spikes[0]:
+                self.da_t = self.d_values[2]
+            else:
+                self.da_t = 0
+        else:
+            raise ValueError('Wrong in_pattern_id!')
+
+        return self.da_t * self.d_ratio
+
+    def get_da_t(self):
+        return self.da_t * self.d_ratio
+
+    def find_pattern(self, t):
+        if self.sim_time == 0:
+            raise RuntimeError('sim-time is not set!')
+        if t % (self.sim_time // 10) < self.sim_time // 20:
+            pattern_id = 0
+        else:
+            pattern_id = 1
+
+        return pattern_id

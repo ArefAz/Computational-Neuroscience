@@ -53,20 +53,21 @@ class Network(torch.nn.Module):
         Specify simulation timestep. The default is 1.0.
     learning: bool, Optional
         Whether to allow weight update and learning. The default is True.
-    reward : AbstractReward, Optional
+    reward_class : AbstractReward, Optional
         The class to allow reward modifications in case of reward-modulated
         learning. The default is None.
-    decision: AbstractDecision, Optional
+    decision_class: AbstractDecision, Optional
         The class to enable decision making. The default is None.
 
     """
 
+    # noinspection PyTypeChecker
     def __init__(
             self,
             dt: float = 1.0,
             learning: bool = True,
-            reward: Optional[AbstractReward] = None,
-            decision: Optional[AbstractDecision] = None,
+            reward_class: Optional[AbstractReward] = None,
+            decision_class: Optional[AbstractDecision] = None,
             **kwargs
     ) -> None:
         super().__init__()
@@ -83,10 +84,13 @@ class Network(torch.nn.Module):
         # Make sure that arguments of your reward and decision classes do not
         # share same names. Their arguments are passed to the network as its
         # keyword arguments.
-        if reward is not None:
-            self.reward = reward(**kwargs)
-        if decision is not None:
-            self.decision = decision(**kwargs)
+        if reward_class is not None:
+            self.reward: AbstractReward = reward_class(**kwargs)
+            self.reward_calculator = kwargs.get("reward_calculator")
+        else:
+            self.reward: AbstractReward = None
+        if decision_class is not None:
+            self.decision = decision_class(**kwargs)
         self.train_ratio: float = kwargs.get("train_ratio", None)
         self.eval_time: bool = False
 
@@ -216,16 +220,17 @@ class Network(torch.nn.Module):
         -------
         None
         """
-
+        clamps = kwargs.get("clamp", {})
+        un_clamps = kwargs.get("un_clamp", {})
+        masks = kwargs.get("masks", {})
         if inputs is None:
             inputs: Dict[str, torch.Tensor] = {}
         if current_inputs is None:
             current_inputs: Dict[str, torch.Tensor] = {}
         if test_inputs is None:
             test_inputs: Dict[str, torch.Tensor] = {}
-        clamps = kwargs.get("clamp", {})
-        un_clamps = kwargs.get("un_clamp", {})
-        masks = kwargs.get("masks", {})
+        if self.reward is not None:
+            self.reward_calculator.set_sim_time(sim_time)
 
         for t in range(sim_time):
             if self.train_ratio is not None and t == int(
@@ -236,7 +241,8 @@ class Network(torch.nn.Module):
             if self.train_ratio is not None and t == int(
                     sim_time * (1 + self.train_ratio) / 2
             ):
-                self.eval_time = False
+                pass
+                # self.eval_time = False
 
             for layer in self.layers:
                 if self.learning or self.eval_time:
@@ -244,9 +250,13 @@ class Network(torch.nn.Module):
                 else:
                     self.layers[layer].forward(test_inputs.get(layer)[t])
 
+            if self.reward is not None:
+                da_t = self.reward_calculator.calc_reward(t)
+                self.reward.compute(da_t=da_t)
+
             for connection in self.connections:
                 if self.learning:
-                    self.connections[connection].update()
+                    self.connections[connection].update(reward=self.reward)
                 self.connections[connection].compute()
 
             for monitor in self.monitors:
