@@ -3,7 +3,7 @@ Module for encoding data into spike.
 """
 
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Optional, Union
 
 import numpy as np
 from scipy import stats
@@ -82,7 +82,7 @@ class Time2FirstSpikeEncoder(AbstractEncoder):
             sim_time: int,
             dt: Optional[float] = 1.0,
             device: Optional[str] = "cpu",
-            data_max_val: Optional[int] = 255,
+            data_max_val: Optional[Union[float, int]] = 255,
             **kwargs
     ) -> None:
         super().__init__(
@@ -182,7 +182,7 @@ class PoissonEncoder(AbstractEncoder):
             rate_max: int,
             dt: Optional[float] = 1.0,
             device: Optional[str] = "cpu",
-            data_max_val: Optional[int] = 255,
+            data_max_val: Optional[Union[int, float]] = 255,
             **kwargs
     ) -> None:
         super().__init__(

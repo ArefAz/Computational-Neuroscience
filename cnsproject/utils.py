@@ -1,15 +1,3 @@
-"""
-Module for utility functions.
-
-TODO.
-
-Use this module to implement any required utility function.
-
-Note: You are going to need to implement DoG and Gabor filters. A possible opt
-ion would be to write them in this file but it is not a must and you can define\
-a separate module/package for them.
-"""
-
 import torch
 import numpy as np
 import math
@@ -461,3 +449,9 @@ class SimpleRewardCalculator(object):
             pattern_id = 1
 
         return pattern_id
+
+
+def relu_normalize(in_tensor: torch.Tensor) -> torch.Tensor:
+    out = torch.where(in_tensor > 0, in_tensor, torch.zeros(1))
+    out /= out.max()
+    return out

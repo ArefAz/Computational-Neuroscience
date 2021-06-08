@@ -335,3 +335,7 @@ def draw_encoded_data_plots(encoded_data: torch.Tensor, smooth_size=13,
         ax[3].plot(histogram, linewidth=0.75)
         ax[3].title.set_text('Original Image Histogram')
         ax[3].set_yticks([])
+
+
+def draw_encoded_images():
+    pass
