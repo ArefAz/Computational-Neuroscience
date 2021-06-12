@@ -1,7 +1,9 @@
 import numpy as np
 import math
-
 import torch
+
+from typing import Union, Tuple, Optional
+from torch.nn.modules.utils import _pair
 
 
 def make_gaussian(size, sig: float, center=None) -> np.ndarray:
@@ -75,7 +77,7 @@ def conv2d(
         strides=(1, 1),
         output_tensor: bool = True,
         zero_one_norm: bool = False,
-) -> np.ndarray:
+) -> Union[torch.Tensor, np.ndarray]:
     # Flip the kernel along x and y axis in order to perform convolution
     # instead of cross-correlation
     flipped_kernel = np.flipud(np.fliplr(kernel))
@@ -118,7 +120,7 @@ def conv2d(
     for x in range(output_w):
         for y in range(output_h):
             patch = image_padded[y * st_y:y * st_y + y_ker,
-                                 x * st_x:x * st_x + x_ker]
+                    x * st_x:x * st_x + x_ker]
             output[y, x] = (flipped_kernel * patch).sum()
 
     if zero_one_norm:
@@ -127,3 +129,90 @@ def conv2d(
     if output_tensor:
         output = torch.tensor(output, dtype=torch.float32)
     return output
+
+
+def conv2d_tensor(
+        image: torch.Tensor,
+        kernel: torch.Tensor,
+        padding='same',
+        strides=(1, 1),
+        zero_one_norm: bool = False,
+) -> torch.Tensor:
+    # Flip the kernel along x and y axis in order to perform convolution
+    # instead of cross-correlation
+    flipped_kernel = torch.flipud(torch.fliplr(kernel))
+    x_ker, y_ker = flipped_kernel.shape
+    x_input, y_input = image.shape[0:2]
+    image_padded = image
+
+    # Handle padding, 'valid' means no padding while 'same' preserves the input
+    # shape by zero-padding.
+    if padding == 'valid':
+        output_h = int(math.ceil((y_input - y_ker + 1) / strides[1]))
+        output_w = int(math.ceil((x_input - x_ker + 1) / strides[0]))
+    elif padding == 'same':
+        output_h = int(math.ceil(y_input / strides[1]))
+        output_w = int(math.ceil(x_input / strides[0]))
+
+        if y_input % strides[1] == 0:
+            pad_h = max((y_ker - strides[1]), 0)
+        else:
+            pad_h = max(y_ker - (y_input % strides[1]), 0)
+        if x_input % strides[0] == 0:
+            pad_w = max((x_ker - strides[0]), 0)
+        else:
+            pad_w = max(x_ker - (x_input % strides[0]), 0)
+
+        pad_top = pad_h // 2
+        pad_bottom = pad_h - pad_top
+        pad_left = pad_w // 2
+        pad_right = pad_w - pad_left
+        image_padded = torch.zeros((x_input + pad_h, y_input + pad_w))
+        image_padded[pad_top:-pad_bottom, pad_left:-pad_right] = image
+    else:
+        raise ValueError("padding should be set to either 'same' or 'valid'!")
+
+    output = torch.zeros((output_h, output_w))
+    st_x = strides[0]
+    st_y = strides[1]
+    # Iterate over all pixels of the output and calculate its value
+    # by using dot-product of the corresponding image patch and the filter
+    for x in range(output_w):
+        for y in range(output_h):
+            patch = image_padded[y * st_y:y * st_y + y_ker,
+                    x * st_x:x * st_x + x_ker]
+            output[y, x] = (flipped_kernel * patch).sum()
+
+    if zero_one_norm:
+        output -= output.min()
+        output /= output.max()
+
+    return output
+
+
+def max_pool2d(
+        image: torch.Tensor,
+        kernel_size: Union[int, Tuple[int, int]] = 2,
+        strides: Optional[Union[int, Tuple[int, int]]] = None,
+) -> torch.Tensor:
+    x_ker, y_ker = _pair(kernel_size)
+    if strides is None:
+        st_x, st_y = x_ker, y_ker
+    else:
+        st_x, st_y = _pair(strides)
+    x_input, y_input = image.shape[0:2]
+    image_padded = image
+
+    output_h = (y_input - y_ker) // st_y + 1
+    output_w = (x_input - x_ker) // st_x + 1
+    output = torch.zeros((output_h, output_w))
+    # Iterate over all pixels of the output and calculate its value
+    # by using maximum of the corresponding image patch
+    for x in range(output_w):
+        for y in range(output_h):
+            patch = image_padded[y * st_y:y * st_y + y_ker,
+                    x * st_x:x * st_x + x_ker]
+            output[y, x] = torch.max(patch)
+
+    return output
+

@@ -1,3 +1,6 @@
+import glob
+
+import cv2
 import torch
 import numpy as np
 import math
@@ -9,7 +12,7 @@ from cnsproject.network.neural_populations import NeuralPopulation, \
 from cnsproject.network import Network
 from cnsproject.network.monitors import Monitor
 from cnsproject.network.connections import DenseConnection, RandomConnection
-from typing import List, Union, Iterable
+from typing import List, Union, Iterable, Tuple
 
 
 def make_gaussian(size, mu, sigma, normalize=False, offset=0):
@@ -455,3 +458,19 @@ def relu_normalize(in_tensor: torch.Tensor) -> torch.Tensor:
     out = torch.where(in_tensor > 0, in_tensor, torch.zeros(1))
     out /= out.max()
     return out
+
+
+def read_images(path: str, size: Tuple[int, int] = (150, 150)) -> list:
+    image_paths = sorted(glob.glob(f'{path}/*'))
+    images = []
+    for path in image_paths:
+        image = cv2.imread(path)[..., ::-1]
+        if len(image.shape) == 3:
+            image_gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        else:
+            image_gray = image
+        image_gray = cv2.resize(image_gray, size)
+        image_gray = image_gray.astype(float) / 255
+        images.append(image_gray)
+
+    return images

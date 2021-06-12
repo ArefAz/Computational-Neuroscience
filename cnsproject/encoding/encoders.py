@@ -179,7 +179,7 @@ class PoissonEncoder(AbstractEncoder):
     def __init__(
             self,
             sim_time: int,
-            rate_max: int,
+            rate_max: Optional[int] = None,
             dt: Optional[float] = 1.0,
             device: Optional[str] = "cpu",
             data_max_val: Optional[Union[int, float]] = 255,
@@ -191,7 +191,10 @@ class PoissonEncoder(AbstractEncoder):
             device=device,
             **kwargs
         )
-        self.rate_max = rate_max
+        if rate_max is None:
+            self.rate_max = sim_time * 2
+        else:
+            self.rate_max = rate_max
         self.data_max_val = data_max_val
 
     def __call__(self, data: torch.Tensor) -> torch.Tensor:

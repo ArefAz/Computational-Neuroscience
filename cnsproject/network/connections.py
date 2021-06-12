@@ -1,14 +1,11 @@
-"""
-Module for connections between neural populations.
-"""
-
 from abc import ABC, abstractmethod
-from typing import Union, Sequence
+from typing import Union, Sequence, Tuple, Optional
+from torch.nn.modules.utils import _pair
+from .neural_populations import NeuralPopulation, LIFPopulation
+from ..filtering.filters import conv2d_tensor, max_pool2d
 
 import torch
 import numpy as np
-
-from .neural_populations import NeuralPopulation, LIFPopulation
 
 
 class AbstractConnection(ABC, torch.nn.Module):
@@ -200,9 +197,9 @@ class DenseConnection(AbstractConnection):
 
         # Make sure non of the weights are outside of [wmin, wmax]
         self.w = torch.where(self.w < self.wmin, mean,
-                                         self.w)
+                             self.w)
         self.w = torch.where(self.w > self.wmax, mean,
-                                         self.w)
+                             self.w)
         # Remove self connections
         if pre == post:
             self.w.fill_diagonal_(0)
@@ -283,9 +280,9 @@ class RandomConnection(AbstractConnection):
             )
         )
         self.w = torch.where(self.w < self.wmin, mean,
-                                         self.w)
+                             self.w)
         self.w = torch.where(self.w > self.wmax, mean,
-                                         self.w)
+                             self.w)
         # First all of the possible connections' weights are set to
         # a fixed value, then the specified number them will be set back to
         # zero to have "num_pre_connections" non-zero weight in the
@@ -334,17 +331,14 @@ class RandomConnection(AbstractConnection):
 
 
 class ConvolutionalConnection(AbstractConnection):
-    """
-    Specify a convolutional synaptic connection between neural populations.
-
-    Implement the convolutional connection pattern following the abstract\
-    connection template.
-    """
-
     def __init__(
             self,
             pre: NeuralPopulation,
             post: NeuralPopulation,
+            strides: Union[int, Tuple[int, int]] = 1,
+            padding: str = 'valid',
+            kernel_size: Union[int, Tuple[int, int]] = None,
+            w: torch.Tensor = None,
             lr: Union[float, Sequence[float]] = None,
             weight_decay: float = 0.0,
             **kwargs
@@ -356,21 +350,62 @@ class ConvolutionalConnection(AbstractConnection):
             weight_decay=weight_decay,
             **kwargs
         )
-        """
-        TODO.
 
-        1. Add more parameters if needed.
-        2. Fill the body accordingly.
-        """
+        self.kernel_size = kernel_size
+        if self.kernel_size is None:
+            if w is None:
+                raise ValueError(
+                    "at least one of 'w' and 'kernel_size' should be "
+                    "provided in ConvolutionalConnection arguments."
+                )
+            else:
+                self.kernel_size = (w.shape[0], w.shape[1])
+        self.kernel_size = _pair(self.kernel_size)
+        self.strides = _pair(strides)
+        self.padding = padding
+        if w is None:
+            if self.wmin == -np.inf or self.wmax == np.inf:
+                w = torch.clamp(
+                    torch.rand(*self.kernel_size),
+                    self.wmin,
+                    self.wmax,
+                )
+            else:
+                w = (self.wmax - self.wmin) * torch.rand(*self.kernel_size)
+                w += self.wmin
+                w = torch.clamp(
+                    w,
+                    self.wmin,
+                    self.wmax,
+                )
+            w -= w.mean()
+        else:
+            if self.wmin != -np.inf or self.wmax != np.inf:
+                w = torch.clamp(w, self.wmin, self.wmax)
+
+        self.register_buffer("w", w)
+        self.check_sizes()
+
+    def check_sizes(self) -> None:
+        test_in = torch.rand(*self.pre.shape)
+        test_out = conv2d_tensor(test_in, self.w, self.padding, self.strides)
+        for i, x in enumerate(self.post.shape):
+            if test_out.shape[i] != x:
+                raise ValueError(
+                    "post-synaptic pop shape is not compatible with specified "
+                    "convolution params\n expected {} but received {}.".format(
+                        test_out.shape[i], x
+                    )
+                )
 
     def compute(self) -> None:
-        """
-        TODO.
-
-        Implement the computation of post-synaptic population activity given the
-        activity of the pre-synaptic population.
-        """
-        pass
+        conv_out = conv2d_tensor(
+            self.pre.s.float(),
+            self.w,
+            padding=self.padding,
+            strides=self.strides
+        )
+        self.post.add_to_voltage(conv_out)
 
     def update(self, **kwargs) -> None:
         """
@@ -391,46 +426,49 @@ class ConvolutionalConnection(AbstractConnection):
 
 
 class PoolingConnection(AbstractConnection):
-    """
-    Specify a pooling synaptic connection between neural populations.
-
-    Implement the pooling connection pattern following the abstract connection\
-    template. Consider a parameter for defining the type of pooling.
-
-    Note: The pooling operation does not support learning. You might need to\
-    make some modifications in the defined structure of this class.
-    """
-
     def __init__(
             self,
             pre: NeuralPopulation,
             post: NeuralPopulation,
-            lr: Union[float, Sequence[float]] = None,
-            weight_decay: float = 0.0,
+            kernel_size: Union[int, Tuple[int, int]] = 2,
+            strides: Optional[Union[int, Tuple[int, int]]] = None,
             **kwargs
     ) -> None:
         super().__init__(
             pre=pre,
             post=post,
-            lr=lr,
-            weight_decay=weight_decay,
             **kwargs
         )
-        """
-        TODO.
+        self.kernel_size = _pair(kernel_size)
+        if strides is None:
+            self.strides = self.kernel_size
+        else:
+            self.strides = _pair(strides)
 
-        1. Add more parameters if needed.
-        2. Fill the body accordingly.
-        """
+        self.check_sizes()
+        self.has_spiked = torch.zeros_like(self.post.s)
+
+    def check_sizes(self) -> None:
+        test_in = torch.rand(*self.pre.shape)
+        test_out = max_pool2d(test_in, self.kernel_size, self.strides)
+        for i, x in enumerate(self.post.shape):
+            if test_out.shape[i] != x:
+                raise ValueError(
+                    "post-synaptic pop shape is not compatible with specified "
+                    "convolution params\n expected {} but received {}.".format(
+                        test_out.shape[i], x
+                    )
+                )
 
     def compute(self) -> None:
-        """
-        TODO.
-
-        Implement the computation of post-synaptic population activity given the
-        activity of the pre-synaptic population.
-        """
-        pass
+        max_out = max_pool2d(
+            self.pre.s,
+            kernel_size=self.kernel_size,
+            strides=self.strides
+        ).type(torch.BoolTensor)
+        self.has_spiked = torch.logical_or(self.has_spiked, self.post.s)
+        max_out = torch.where(self.has_spiked, False, max_out)
+        self.post.add_to_voltage(max_out)
 
     def update(self, **kwargs) -> None:
         """
