@@ -33,7 +33,7 @@ def dog_filter(
     g1 = make_gaussian(size, sig=sig1)
     g2 = make_gaussian(size, sig=sig2)
     dog: np.ndarray = g1 - g2
-    dog -= dog.sum() / dog.size
+    dog -= dog.mean()
     if is_off_center:
         dog *= -1
     return dog
@@ -45,8 +45,9 @@ def gabor_filter(
         gamma: float = 1.2,
         lam: float = 10.,
         theta: float = 0.,
-        is_off_center: bool = False
-) -> np.ndarray:
+        is_off_center: bool = False,
+        return_tensor: bool = False
+) -> Union[np.ndarray, torch.Tensor]:
     x0 = y0 = k_size // 2
     gabor = np.zeros((k_size, k_size))
 
@@ -67,6 +68,8 @@ def gabor_filter(
     gabor -= gabor.sum() / gabor.size
     if is_off_center:
         gabor *= -1
+    if return_tensor:
+        gabor = torch.tensor(gabor, dtype=torch.float32)
     return gabor
 
 

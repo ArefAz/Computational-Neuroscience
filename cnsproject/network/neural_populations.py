@@ -5,9 +5,11 @@ Module for neuronal dynamics and populations.
 from functools import reduce
 from abc import abstractmethod
 from operator import mul
-from typing import Union, Iterable
+from typing import Union, Iterable, Sequence
+from cnsproject.filtering.filters import make_gaussian
 
 import torch
+import torch.nn.functional as F
 
 
 class NeuralPopulation(torch.nn.Module):
@@ -80,7 +82,7 @@ class NeuralPopulation(torch.nn.Module):
     # noinspection PyTypeChecker
     def __init__(
             self,
-            shape: Iterable[int],
+            shape: Sequence[int],
             spike_trace: bool = True,
             additive_spike_trace: bool = True,
             tau_s: Union[float, torch.Tensor] = 15.,
@@ -91,7 +93,10 @@ class NeuralPopulation(torch.nn.Module):
     ) -> None:
         super().__init__()
 
-        self.shape = shape
+        if len(shape) == 2:
+            self.shape = (1, *shape)
+        else:
+            self.shape = shape
         self.n = reduce(mul, self.shape)
         self.spike_trace = spike_trace
         self.additive_spike_trace = additive_spike_trace
@@ -124,6 +129,7 @@ class NeuralPopulation(torch.nn.Module):
             self.tau_s: torch.Tensor = None
             self.trace_scale: torch.Tensor = None
             self.trace_decay: torch.Tensor = None
+        self.neuron_potentials: torch.Tensor
 
     @abstractmethod
     def forward(self, traces: torch.Tensor) -> None:
@@ -197,7 +203,7 @@ class NeuralPopulation(torch.nn.Module):
         None
 
         """
-        self.dt = self.dt.clone().detach()
+        # self.dt = self.dt.clone().detach()
 
         if self.spike_trace:
             self.trace_decay = torch.exp(-self.dt / self.tau_s)
@@ -246,13 +252,14 @@ class LIFPopulation(NeuralPopulation):
     # noinspection PyTypeChecker
     def __init__(
             self,
-            shape: Iterable[int],
+            shape: Sequence[int],
             spike_trace: bool = True,
             additive_spike_trace: bool = True,
             tau_s: Union[float, torch.Tensor] = 15.,
             trace_scale: Union[float, torch.Tensor] = 1.,
             is_inhibitory: bool = False,
             learning: bool = True,
+            kwta: int = None,
             **kwargs
     ) -> None:
         super().__init__(
@@ -266,8 +273,7 @@ class LIFPopulation(NeuralPopulation):
             **kwargs
         )
         self._init_kwargs(kwargs)
-
-        self.shape = shape
+        self.kwta = kwta
         self.register_buffer(
             "neuron_potentials",
             torch.ones(*self.shape, dtype=torch.float32) * self.u_rest
@@ -277,6 +283,8 @@ class LIFPopulation(NeuralPopulation):
             torch.zeros(*self.shape, dtype=torch.float32)
         )
 
+        self.initialize_lateral(**kwargs)
+        self.selected_maps = []
         # just to silence PyCharm's warning
         if self.neuron_potentials is None:
             self.neuron_potentials: torch.Tensor = None
@@ -318,10 +326,25 @@ class LIFPopulation(NeuralPopulation):
             tensor = torch.tensor(15, dtype=torch.float32)
         self.register_buffer('tau', tensor)
 
+    def initialize_lateral(self, **kwargs):
+        inh_int: float = kwargs.get("lat_inh_int", 0.5)
+        k: int = kwargs.get("lat_k_size", 3)
+        if k % 2 == 0:
+            raise ValueError("lat_k_size should be an odd integer.")
+        sigma: float = kwargs.get("lat_sigma", 3)
+        g_inv = -make_gaussian(k, sigma)
+        inhibit_mask = torch.tensor(g_inv, dtype=torch.float32) * inh_int
+        inhibit_maps = torch.zeros(*self.shape)
+        self.register_buffer("inhibit_mask", inhibit_mask)
+        self.register_buffer("inhibit_maps", inhibit_maps)
+        inh_kernel = torch.stack((self.inhibit_mask,) * len(inhibit_maps))
+        self.register_buffer("inh_kernel", inh_kernel)
+
     def forward(self, traces: torch.Tensor) -> None:
         self.in_current = traces
         self.compute_potential(traces)
         self.compute_spike()
+        self.refractory_and_reset()
         self.compute_decay()
         super().forward(traces)
 
@@ -333,12 +356,45 @@ class LIFPopulation(NeuralPopulation):
 
     def compute_spike(self) -> None:
 
-        self.s = torch.where(
-            self.neuron_potentials < self.threshold,
-            torch.zeros(1, dtype=torch.bool),
-            torch.ones(1, dtype=torch.bool)
-        )
-        self.refractory_and_reset()
+        if self.kwta is not None:
+            volts = self.neuron_potentials
+
+            k = self.inh_kernel.shape[-1]
+            p = k // 2
+
+            winners_idx = [
+                (i, *divmod(f.argmax().item(), f.shape[0]))
+                for i, f in enumerate(volts)
+                if i not in self.selected_maps and f.max() >= self.threshold
+            ]
+
+            if len(winners_idx) + len(self.selected_maps) >= self.kwta:
+                winners_idx.sort(key=lambda x: volts[x], reverse=True)
+                winners_idx = winners_idx[:self.kwta - len(self.selected_maps)]
+
+            if len(winners_idx) and len(self.selected_maps) <= self.kwta:
+                winners = torch.zeros_like(self.s)
+                for idx in winners_idx:
+                    winners[idx] = True
+                    self.selected_maps.append(idx[0])
+
+                self.s = winners
+
+                inh_map = F.conv2d(
+                    winners.unsqueeze(0).float(),
+                    self.inh_kernel.unsqueeze(0),
+                    padding=p
+                ).squeeze()
+                self.add_to_voltage(inh_map)
+            else:
+                self.s.zero_()
+
+        else:
+            self.s = torch.where(
+                self.neuron_potentials < self.threshold,
+                False,
+                True
+            )
 
     def refractory_and_reset(self, index: int = 0) -> None:
         # noinspection PyTypeChecker
@@ -353,15 +409,17 @@ class LIFPopulation(NeuralPopulation):
 
     def reset_state_variables(self):
         super().reset_state_variables()
-        self.neuron_potentials = torch.ones_like(
-            self.neuron_potentials
-        ) * self.u_rest
+        self.neuron_potentials.fill_(self.u_rest)
+        self.selected_maps.clear()
 
     def add_to_voltage(self, v: torch.Tensor) -> None:
-        assert self.neuron_potentials.shape == v.shape, \
-            "input tensor shape should be the same as the neuron_potentials'" \
-            "shape, but got {} and {}".format(self.neuron_potentials.shape,
-                                              v.shape)
+        if self.neuron_potentials.shape[-2:] != v.shape[-2:]:
+            raise ValueError(
+                "input tensor shape should be compatible the "
+                "neuron_potentials' shape, but got {} and {}".format(
+                    self.neuron_potentials.shape, v.shape)
+            )
+
         self.neuron_potentials += v
 
 
@@ -390,7 +448,7 @@ class InputPopulation(NeuralPopulation):
 
     def __init__(
             self,
-            shape: Iterable[int],
+            shape: Sequence[int],
             spike_trace: bool = True,
             additive_spike_trace: bool = True,
             tau_s: Union[float, torch.Tensor] = 15.,
@@ -450,7 +508,7 @@ class ELIFPopulation(NeuralPopulation):
 
     def __init__(
             self,
-            shape: Iterable[int],
+            shape: Sequence[int],
             spike_trace: bool = True,
             additive_spike_trace: bool = True,
             tau_s: Union[float, torch.Tensor] = 10.,
@@ -574,7 +632,7 @@ class AELIFPopulation(NeuralPopulation):
 
     def __init__(
             self,
-            shape: Iterable[int],
+            shape: Sequence[int],
             spike_trace: bool = True,
             additive_spike_trace: bool = True,
             tau_s: Union[float, torch.Tensor] = 10.,

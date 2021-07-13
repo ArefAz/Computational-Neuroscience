@@ -2,10 +2,11 @@ from abc import ABC, abstractmethod
 from typing import Union, Sequence, Tuple, Optional
 from torch.nn.modules.utils import _pair
 from .neural_populations import NeuralPopulation, LIFPopulation
-from ..filtering.filters import conv2d_tensor, max_pool2d
+from ..filtering.filters import max_pool2d, make_gaussian
 
-import torch
 import numpy as np
+import torch
+import torch.nn.functional as F
 
 
 class AbstractConnection(ABC, torch.nn.Module):
@@ -331,16 +332,19 @@ class RandomConnection(AbstractConnection):
 
 
 class ConvolutionalConnection(AbstractConnection):
+    # noinspection PyTypeChecker
     def __init__(
             self,
             pre: NeuralPopulation,
             post: NeuralPopulation,
             strides: Union[int, Tuple[int, int]] = 1,
-            padding: str = 'valid',
+            padding: Union[int, Tuple[int, int]] = 0,
             kernel_size: Union[int, Tuple[int, int]] = None,
             w: torch.Tensor = None,
             lr: Union[float, Sequence[float]] = None,
             weight_decay: float = 0.0,
+            do_normalize_weights: bool = False,
+            kwta: int = 0,
             **kwargs
     ) -> None:
         super().__init__(
@@ -350,7 +354,8 @@ class ConvolutionalConnection(AbstractConnection):
             weight_decay=weight_decay,
             **kwargs
         )
-
+        self.kwta = kwta
+        self.do_normalize_weights = do_normalize_weights
         self.kernel_size = kernel_size
         if self.kernel_size is None:
             if w is None:
@@ -360,26 +365,41 @@ class ConvolutionalConnection(AbstractConnection):
                 )
             else:
                 self.kernel_size = (w.shape[0], w.shape[1])
+        self.post_threshold: torch.Tensor = self.post.threshold
         self.kernel_size = _pair(self.kernel_size)
-        self.strides = _pair(strides)
-        self.padding = padding
+        self.stride = _pair(strides)
+        self.padding = _pair(padding)
+        self.in_channels = self.pre.shape[0]
+        self.out_channels = self.post.shape[0]
+        shape = (self.out_channels, self.in_channels, self.kernel_size[0],
+                 self.kernel_size[1])
         if w is None:
             if self.wmin == -np.inf or self.wmax == np.inf:
                 w = torch.clamp(
-                    torch.rand(*self.kernel_size),
+                    torch.rand(self.out_channels, self.in_channels,
+                               *self.kernel_size),
                     self.wmin,
                     self.wmax,
                 )
             else:
-                w = (self.wmax - self.wmin) * torch.rand(*self.kernel_size)
+                w = (self.wmax - self.wmin) * torch.rand(self.out_channels,
+                                                         self.in_channels,
+                                                         *self.kernel_size)
                 w += self.wmin
-                w = torch.clamp(
-                    w,
-                    self.wmin,
-                    self.wmax,
-                )
-            w -= w.mean()
+                w = torch.clamp(w, self.wmin, self.wmax,)
+            for i in range(len(w)):
+                w[i] -= w[i].mean()
         else:
+            if len(w.shape) == 2:
+                w = torch.unsqueeze(w, 0)
+            if len(w.shape) == 3:
+                w = torch.unsqueeze(w, 0)
+            for i, s in enumerate(w.shape):
+                if s != shape[i]:
+                    raise ValueError(
+                        'Incompatible filter shapes: expected {} but got {}'.format(
+                            shape, w.shape)
+                    )
             if self.wmin != -np.inf or self.wmax != np.inf:
                 w = torch.clamp(w, self.wmin, self.wmax)
 
@@ -387,42 +407,45 @@ class ConvolutionalConnection(AbstractConnection):
         self.check_sizes()
 
     def check_sizes(self) -> None:
-        test_in = torch.rand(*self.pre.shape)
-        test_out = conv2d_tensor(test_in, self.w, self.padding, self.strides)
+        test_in = torch.rand(1, *self.pre.shape)
+        test_out = F.conv2d(
+            test_in, self.w,
+            stride=self.stride,
+            padding=self.padding,
+        )
+        test_out = test_out.reshape(*test_out.shape[1:])
         for i, x in enumerate(self.post.shape):
             if test_out.shape[i] != x:
                 raise ValueError(
                     "post-synaptic pop shape is not compatible with specified "
-                    "convolution params\n expected {} but received {}.".format(
-                        test_out.shape[i], x
+                    "convolution params\n expected {} "
+                    "but received {}.".format(
+                        test_out.shape, self.post.shape
                     )
                 )
 
     def compute(self) -> None:
-        conv_out = conv2d_tensor(
-            self.pre.s.float(),
+        conv_out = F.conv2d(
+            self.pre.s.unsqueeze(0).float(),
             self.w,
+            stride=self.stride,
             padding=self.padding,
-            strides=self.strides
-        )
+        ).squeeze(0)
+
         self.post.add_to_voltage(conv_out)
 
     def update(self, **kwargs) -> None:
-        """
-        TODO.
+        super().update(**kwargs)
 
-        Update the connection weights based on the learning rule computations.
-        You might need to call the parent method.
-        """
-        pass
+        if self.do_normalize_weights:
+            self._normalize_weights()
 
     def reset_state_variables(self) -> None:
-        """
-        TODO.
-
-        Reset all the state variables of the connection.
-        """
         pass
+
+    def _normalize_weights(self):
+        for i in range(len(self.w)):
+            self.w[i] -= self.w[i].mean()
 
 
 class PoolingConnection(AbstractConnection):
@@ -441,16 +464,16 @@ class PoolingConnection(AbstractConnection):
         )
         self.kernel_size = _pair(kernel_size)
         if strides is None:
-            self.strides = self.kernel_size
+            self.stride = self.kernel_size
         else:
-            self.strides = _pair(strides)
+            self.stride = _pair(strides)
 
         self.check_sizes()
         self.has_spiked = torch.zeros_like(self.post.s)
 
     def check_sizes(self) -> None:
         test_in = torch.rand(*self.pre.shape)
-        test_out = max_pool2d(test_in, self.kernel_size, self.strides)
+        test_out = max_pool2d(test_in, self.kernel_size, self.stride)
         for i, x in enumerate(self.post.shape):
             if test_out.shape[i] != x:
                 raise ValueError(
@@ -464,7 +487,7 @@ class PoolingConnection(AbstractConnection):
         max_out = max_pool2d(
             self.pre.s,
             kernel_size=self.kernel_size,
-            strides=self.strides
+            strides=self.stride
         ).type(torch.BoolTensor)
         self.has_spiked = torch.logical_or(self.has_spiked, self.post.s)
         max_out = torch.where(self.has_spiked, False, max_out)

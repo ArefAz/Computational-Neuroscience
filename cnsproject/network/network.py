@@ -255,9 +255,9 @@ class Network(torch.nn.Module):
                 self.reward.compute(da_t=da_t)
 
             for connection in self.connections:
+                self.connections[connection].compute()
                 if self.learning:
                     self.connections[connection].update(reward=self.reward)
-                self.connections[connection].compute()
 
             for monitor in self.monitors:
                 self.monitors[monitor].record()

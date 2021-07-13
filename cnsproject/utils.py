@@ -1,5 +1,5 @@
 import glob
-
+import random
 import cv2
 import torch
 import numpy as np
@@ -460,8 +460,17 @@ def relu_normalize(in_tensor: torch.Tensor) -> torch.Tensor:
     return out
 
 
-def read_images(path: str, size: Tuple[int, int] = (150, 150)) -> list:
-    image_paths = sorted(glob.glob(f'{path}/*'))
+def read_images(
+        path: str,
+        size: Tuple[int, int] = None,
+        sort: bool = True
+) -> list:
+    image_paths = glob.glob(f'{path}/*')
+    if sort:
+        image_paths = sorted(image_paths)
+    else:
+        random.shuffle(image_paths)
+
     images = []
     for path in image_paths:
         image = cv2.imread(path)[..., ::-1]
@@ -469,8 +478,16 @@ def read_images(path: str, size: Tuple[int, int] = (150, 150)) -> list:
             image_gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
         else:
             image_gray = image
-        image_gray = cv2.resize(image_gray, size)
+        if size is not None:
+            image_gray = cv2.resize(image_gray, size)
         image_gray = image_gray.astype(float) / 255
         images.append(image_gray)
 
     return images
+
+
+def crop_center(img, cropx, cropy):
+    y, x = img.shape
+    startx = x // 2 - (cropx // 2)
+    starty = y // 2 - (cropy // 2)
+    return img[starty:starty + cropy, startx:startx + cropx]
